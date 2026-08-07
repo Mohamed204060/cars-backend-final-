@@ -25,6 +25,8 @@ from pct_api import router as pct_router
 from pct_repository import PostgresPctRepository
 from order_api import router as order_router
 from order_repository import PostgresOrderRepository
+from inventory_item_api import router as inventory_router
+from inventory_item_repository import PostgresInventoryItemRepository
 from message_api import router as message_router
 from message_repository import PostgresMessageRepository
 from message_extended_api import router as message_extended_router
@@ -61,6 +63,7 @@ def app_and_client(conn):
     app.state.store_repository = PostgresStoreRepository(conn)
     app.state.pct_repository = PostgresPctRepository(conn)
     app.state.order_repository = PostgresOrderRepository(conn)
+    app.state.inventory_repository = PostgresInventoryItemRepository(conn)
     app.state.message_repository = PostgresMessageRepository(conn)
     app.state.message_extended_repository = PostgresMessageExtendedRepository(conn)
     app.state.ntf_repository = PostgresNtfRepository(conn)
