@@ -57,16 +57,32 @@ def app_and_client():
     return app, client
 
 
+_TEST_PASSWORD = "Str0ngPass1!"
+
+
 def _login_as(app, client, email: str, role: str = "individual_buyer") -> str:
+    """إنشاء مستخدم جديد + Identity جديدة + أول تسجيل دخول له.
+
+    لا تُستخدَم لإعادة تسجيل دخول مستخدم أُنشئ سابقًا في نفس الاختبار (بعد
+    logout) — استخدم _login_existing لذلك؛ استدعاء هذه الدالة بنفس البريد
+    مرتين يحاول إنشاء Identity مكرَّرة عمدًا يرفضها InMemoryAuthRepository
+    (سلوك صحيح للـRepository، وليس خطأً فيه)."""
     repo = app.state.auth_repository
     user_id = repo.create_user()
     repo.set_user_role(user_id, role)
     identity = UserIdentity(id="", user_id=user_id, provider_code="email_password",
                              external_identifier=email, is_verified=True, is_primary=True)
-    repo.insert_identity(identity, raw_password="Str0ngPass1!")
-    resp = client.post("/api/v1/auth/login", json={"login_identifier": email, "password": "Str0ngPass1!"})
+    repo.insert_identity(identity, raw_password=_TEST_PASSWORD)
+    resp = client.post("/api/v1/auth/login", json={"login_identifier": email, "password": _TEST_PASSWORD})
     assert resp.status_code == 200
     return user_id
+
+
+def _login_existing(client, email: str) -> None:
+    """إعادة تسجيل دخول لمستخدم/Identity أُنشئا مسبقًا عبر _login_as في نفس
+    الاختبار (عادة بعد logout) — بلا أي إنشاء مستخدم أو Identity جديدة."""
+    resp = client.post("/api/v1/auth/login", json={"login_identifier": email, "password": _TEST_PASSWORD})
+    assert resp.status_code == 200
 
 
 def _make_approved_part(app, client) -> str:
@@ -132,7 +148,7 @@ class TestPurchaseRequestOffers:
                     json={"amount": 120.0, "currency": "SAR", "provides_shipping": True})
 
         client.post("/api/v1/auth/logout")
-        _login_as(app, client, "buyer3@example.com")
+        _login_existing(client, "buyer3@example.com")
         resp = client.get(f"/api/v1/purchase-requests/{pr_id}/offers")
         assert resp.status_code == 200
         assert resp.json()["pagination"]["total_items"] == 2
@@ -338,7 +354,7 @@ class TestConversationsList:
         assert resp.json()["pagination"]["total_items"] == 0
 
         client.post("/api/v1/auth/logout")
-        _login_as(app, client, "u1@example.com")
+        _login_existing(client, "u1@example.com")
         resp = client.get("/api/v1/conversations")
         assert resp.status_code == 200
         body = resp.json()
