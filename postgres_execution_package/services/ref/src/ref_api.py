@@ -77,8 +77,13 @@ def _parse_xlsx_rows(file_bytes: bytes) -> list[dict]:
         return []
     parsed = []
     for raw_row in rows_iter:
-        if raw_row is None or all(v is None for v in raw_row):
+        if raw_row is None or len(raw_row) == 0:
             continue
+        # ملاحظة: صف بقيمة واحدة فارغة ("") يُحفَظ في xlsx كخلية فارغة تمامًا
+        # (None عند إعادة القراءة عبر openpyxl، لا فرق شكليًا عن صف فارغ
+        # بالكامل). لا يجوز إسقاط هذا الصف هنا: صف برمز code فارغ هو حالة
+        # عمل صحيحة يجب أن تصل classify_import_rows لتُصنَّف "rejected"
+        # (REQ-REF-005/006)، لا أن تختفي من العدّ قبل الوصول إليه أصلًا.
         row_dict = {headers[i]: (str(raw_row[i]).strip() if i < len(raw_row) and raw_row[i] is not None else "")
                     for i in range(len(headers))}
         parsed.append(row_dict)
