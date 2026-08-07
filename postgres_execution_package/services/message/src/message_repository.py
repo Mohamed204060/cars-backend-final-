@@ -7,6 +7,7 @@ message_repository.py — طبقة الوصول للبيانات لخدمة ال
 """
 
 from abc import ABC, abstractmethod
+from datetime import datetime, timedelta, timezone
 from typing import Optional, List
 
 from message_service import Conversation, Message
@@ -215,11 +216,19 @@ class InMemoryMessageRepository(MessageRepository):
         self._messages = {}
         self._participants = set()  # {(conversation_id, user_ref_id)} — يحاكي uq_conversation_participants
         self._seq = {"conv": 1, "msg": 1}
-        self._clock = 0  # ترتيب زمني تصاعدي بسيط بديل عن created_at حقيقي في الذاكرة
+        # ترتيب زمني تصاعدي حقيقي بديل عن DEFAULT now() في Postgres — datetime
+        # فعلي، لا int. الخطأ الجذري (Gate 1) كان هنا تحديدًا: النسخة السابقة
+        # أعادت عدادًا صحيحًا (int) وأسندته مباشرة إلى created_at، بينما العقد
+        # المعلَن Optional[datetime] في message_service.py وسلوك Postgres
+        # الفعلي (row["created_at"] من psycopg2) كلاهما datetime دائمًا. لم
+        # تكن المشكلة في _to_response() ولا في .isoformat() — ذاك السلوك
+        # صحيح ومطلوب؛ المشكلة في مصدر القيمة هنا فقط.
+        self._clock_base = datetime(2020, 1, 1, tzinfo=timezone.utc)
+        self._clock_ticks = 0
 
-    def _next_tick(self) -> int:
-        self._clock += 1
-        return self._clock
+    def _next_tick(self) -> datetime:
+        self._clock_ticks += 1
+        return self._clock_base + timedelta(microseconds=self._clock_ticks)
 
     def insert_conversation(self, conversation: Conversation) -> Conversation:
         conversation.id = f"conv-{self._seq['conv']}"
@@ -243,7 +252,10 @@ class InMemoryMessageRepository(MessageRepository):
 
     def get_messages_for_conversation(self, conversation_id: str) -> List[Message]:
         msgs = [m for m in self._messages.values() if m.conversation_id == conversation_id]
-        return sorted(msgs, key=lambda m: m.created_at or 0)
+        # created_at مضمون الوجود دائمًا لأي رسالة أُدرجت عبر insert_message
+        # أعلاه؛ لا حاجة لقيمة بديلة عند الفرز (والبديل السابق "or 0" كان
+        # سيكسر المقارنة بين datetime وint أصلًا لو تحقّق فعليًا).
+        return sorted(msgs, key=lambda m: m.created_at)
 
     def update_message(self, message: Message) -> Message:
         self._messages[message.id] = message
@@ -268,7 +280,7 @@ class InMemoryMessageRepository(MessageRepository):
 
         def _last_activity(conv):
             last = self.get_last_message_for_conversation(conv.id)
-            return last.created_at if last else (conv.created_at or 0)
+            return last.created_at if last else conv.created_at
 
         convs.sort(key=_last_activity, reverse=True)
         total = len(convs)
