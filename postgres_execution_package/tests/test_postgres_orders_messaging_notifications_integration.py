@@ -98,6 +98,31 @@ def _make_approved_part(client, conn) -> str:
     return part_id
 
 
+def _make_recipient(conn, user_ref_id: str) -> str:
+    """يبني سلسلة الاعتماديات الحقيقية الكاملة لسجل Recipient صالح
+    (campaign → delivery → recipient) عبر SQL مباشر، تفاديًا لاستخدام
+    recipient_id عشوائي لا يقابله صف فعلي في ntf.recipients (FK حقيقي)."""
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO ntf.campaigns (created_by_user_ref_id, title, body, audience_type) "
+        "VALUES (%s, %s, %s, 'static') RETURNING id",
+        (user_ref_id, "إشعار اختباري", "نص الإشعار"),
+    )
+    campaign_id = cur.fetchone()["id"]
+    cur.execute(
+        "INSERT INTO ntf.deliveries (campaign_id, campaign_version_snapshot, correlation_id) "
+        "VALUES (%s, 1, %s) RETURNING id",
+        (campaign_id, str(uuid.uuid4())),
+    )
+    delivery_id = cur.fetchone()["id"]
+    cur.execute(
+        "INSERT INTO ntf.recipients (delivery_id, user_ref_id, channel_provider_code) "
+        "VALUES (%s, %s, 'email') RETURNING id",
+        (delivery_id, user_ref_id),
+    )
+    return cur.fetchone()["id"]
+
+
 class TestFullOrderToMessageToNotificationScenario:
     """السيناريو الكامل الذي طلبه مالك المشروع صراحةً: تكامل حقيقي بين
     الخدمات الثلاث، لا اختبار كل خدمة بمعزل عن الأخرى."""
@@ -134,8 +159,9 @@ class TestFullOrderToMessageToNotificationScenario:
         conversation_id = message_resp.json()["conversation_id"]
 
         # 4) إشعار للمشتري (يُزرَع هنا؛ لا Endpoint إنشاء حملات ضمن هذا الـIncrement)
+        recipient_id = _make_recipient(conn, buyer_id)
         notification_entry = app.state.ntf_repository.insert_notification_center_entry(
-            NotificationCenterEntry(id="", recipient_id=str(uuid.uuid4()), user_ref_id=buyer_id)
+            NotificationCenterEntry(id="", recipient_id=recipient_id, user_ref_id=buyer_id)
         )
 
         # 5) المشتري يعود، يقرأ الرسالة، يعلِّم الإشعار كمقروء، ثم يقبل العرض
