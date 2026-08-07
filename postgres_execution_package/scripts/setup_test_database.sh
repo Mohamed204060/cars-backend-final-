@@ -3,7 +3,7 @@
 # الحالة: Prepared — لم يُشغَّل فعليًا في هذه الجلسة (لا اتصال شبكة/PostgreSQL هنا)
 #
 # الغرض: إنشاء قاعدة بيانات اختبار فارغة تمامًا، ثم تطبيق كل ملفات
-# الترحيل (000 حتى 025) بالترتيب الرقمي من الصفر. الحزمة مكتفية ذاتيًا
+# الترحيل (000 حتى 027) بالترتيب الرقمي من الصفر. الحزمة مكتفية ذاتيًا
 # بالكامل: لا اعتماد على أي ملف خارج مجلد migrations/ المرفَق هنا.
 #
 # الاستخدام (في بيئة خارجية فعلية تدعم PostgreSQL):
@@ -26,7 +26,7 @@ REQUIRED_FILES=(
   "027_com_conversation_participants.sql"
 )
 
-echo "=== التحقق من اكتمال جميع ملفات الترحيل المطلوبة (000-026) قبل أي تنفيذ ==="
+echo "=== التحقق من اكتمال جميع ملفات الترحيل المطلوبة (000-027) قبل أي تنفيذ ==="
 missing=0
 for f in "${REQUIRED_FILES[@]}"; do
   if [ ! -f "$MIGRATIONS_DIR/$f" ]; then
@@ -46,7 +46,7 @@ dropdb --if-exists "$DB_NAME"
 echo "=== إنشاء قاعدة اختبار فارغة تمامًا ==="
 createdb "$DB_NAME"
 
-echo "=== تطبيق كل ملفات الترحيل بالترتيب الرقمي (000 حتى 026) ==="
+echo "=== تطبيق كل ملفات الترحيل بالترتيب الرقمي (000 حتى 027) ==="
 for f in "${REQUIRED_FILES[@]}"; do
   echo "--- تطبيق: $f ---"
   psql -d "$DB_NAME" -v ON_ERROR_STOP=1 -f "$MIGRATIONS_DIR/$f"
@@ -55,4 +55,4 @@ done
 echo "=== التحقق السريع: عدد المخططات المُنشَأة ==="
 psql -d "$DB_NAME" -c "SELECT schema_name FROM information_schema.schemata WHERE schema_name NOT LIKE 'pg_%' AND schema_name != 'information_schema' ORDER BY schema_name;"
 
-echo "=== نجاح: قاعدة الاختبار '$DB_NAME' جاهزة بكل الجداول من الصفر (26 ملف ترحيل مُطبَّق) ==="
+echo "=== نجاح: قاعدة الاختبار '$DB_NAME' جاهزة بكل الجداول من الصفر (27 ملف ترحيل مُطبَّق) ==="
