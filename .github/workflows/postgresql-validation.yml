@@ -307,6 +307,14 @@ jobs:
             --junitxml="../$EVIDENCE_DIR/messaging-api-tests.xml" \
             2>&1 | tee "../$EVIDENCE_DIR/messaging-api-tests.log"
 
+      - name: Run CR-015 Frontend Enablement API tests
+        working-directory: postgres_execution_package
+        run: |
+          set -euo pipefail
+          python -m pytest tests/test_cr015_frontend_enablement.py -vv \
+            --junitxml="../$EVIDENCE_DIR/cr015-frontend-enablement-tests.xml" \
+            2>&1 | tee "../$EVIDENCE_DIR/cr015-frontend-enablement-tests.log"
+
       - name: Run Notifications REST API unit tests
         working-directory: postgres_execution_package
         run: |
