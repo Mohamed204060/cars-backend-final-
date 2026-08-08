@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: منصة قطع غيار السيارات - Auto Parts Marketplace API
-  version: 1.11.0
+  version: 1.12.0
   description: 'مواصفة API تنفيذية، تغطي 15 عملية (Operations) عبر 14 مسارًا (Paths): الواجهات التمثيلية
     الخمس الأصلية الموثّقة بالتفصيل في التصميم التفصيلي (الحزمة 2)، بالإضافة إلى 5 عمليات خدمة Auth (اعتماد
     Contract Extension & Implementation Plan): تسجيل خروج، عرض/إضافة/إزالة وسائل الهوية، وعرض مزوّدي الهوية
@@ -1253,6 +1253,26 @@ components:
       - user_id
       - primary_role
       - account_status
+    StorePublicResponse:
+      type: object
+      description: 'CR-017: عرض عام لمتجر status=''active'' فقط — يستبعد owner_user_ref_id عمدًا (تسريب
+        خصوصية). غير active → 404.'
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum:
+          - active
+        country_ref_id:
+          type: string
+          format: uuid
+          nullable: true
+        city_ref_id:
+          type: string
+          format: uuid
+          nullable: true
 paths:
   /api/v1/subscriptions/plans:
     post:
@@ -1458,13 +1478,15 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
     get:
       operationId: listPublishedArticles
-      summary: عرض كل المقالات المنشورة (عام)
-      x-traceability:
-        requirements:
-        - REQ-CNT-002
-        decisions: []
-      security:
-      - sessionAuth: []
+      summary: عرض كل المقالات المنشورة (عام بالكامل)
+      x-traceability: &id001
+        requirements: []
+        decisions:
+        - CR-017
+        x-gap-note: 'Public Read Consistency — قوائم عامة كانت تقود لتفاصيل تتطلب جلسة بلا سبب Business
+          Rule موثَّق؛ عولجت هنا بمبدأ: Public List → Public Detail للكيانات المنشورة/المعتمدة/النشطة
+          فقط.'
+      security: []
       parameters:
       - $ref: '#/components/parameters/CorrelationIdHeader'
       responses:
@@ -1476,16 +1498,14 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/ArticleResponse'
+      description: 'CR-017: عام بالكامل، بلا جلسة — كانت تتطلب جلسة سابقًا بلا سبب موثَّق رغم أن الاستعلام
+        الداخلي مُصفًّى لمنشور فقط أصلًا.'
   /api/v1/content/articles/{articleId}:
     get:
       operationId: getArticle
-      summary: عرض مقال بمعرّفه
-      x-traceability:
-        requirements:
-        - REQ-CNT-001
-        decisions: []
-      security:
-      - sessionAuth: []
+      summary: 'عرض مقال بمعرّفه (Dual-mode: عام لمنشور، بجلسة لغيره)'
+      x-traceability: *id001
+      security: []
       parameters:
       - $ref: '#/components/parameters/CorrelationIdHeader'
       - name: articleId
@@ -1507,6 +1527,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+      description: 'CR-017: published → عام بالكامل، بلا جلسة. غير ذلك (unpublished) → بلا تغيير عن السلوك
+        السابق: يتطلب أي جلسة صالحة (401 لغيابها)، بلا فحص دور إضافي.'
   /api/v1/content/articles/{articleId}/publish:
     post:
       operationId: publishArticle
@@ -2142,7 +2164,7 @@ paths:
     get:
       operationId: listScheduledJobs
       summary: قائمة المهام المجدولة (مدير النظام حصريًا)
-      x-traceability: &id001
+      x-traceability: &id002
         requirements: []
         decisions:
         - CR-015
@@ -2150,7 +2172,7 @@ paths:
       security:
       - sessionAuth: []
       parameters:
-      - &id002
+      - &id003
         $ref: '#/components/parameters/CorrelationIdHeader'
       - name: status_filter
         in: query
@@ -2809,11 +2831,11 @@ paths:
       summary: قائمة المتاجر (استخدام إداري — لا Directory عام)
       description: مقصور على مدير النظام أو المشرف (نفس نطاق صلاحية تغيير حالة المتجر). لا تفعيل لعرض
         عام في هذه الـCR.
-      x-traceability: *id001
+      x-traceability: *id002
       security:
       - sessionAuth: []
       parameters:
-      - *id002
+      - *id003
       - name: status_filter
         in: query
         schema:
@@ -2856,13 +2878,9 @@ paths:
   /api/v1/store/stores/{storeId}:
     get:
       operationId: getStore
-      summary: عرض متجر بمعرّفه
-      x-traceability:
-        requirements:
-        - REQ-STR-001
-        decisions: []
-      security:
-      - sessionAuth: []
+      summary: 'عرض متجر بمعرّفه (Dual-mode: عام لـactive، كامل بجلسة)'
+      x-traceability: *id001
+      security: []
       parameters:
       - $ref: '#/components/parameters/CorrelationIdHeader'
       - name: storeId
@@ -2873,17 +2891,22 @@ paths:
           format: uuid
       responses:
         '200':
-          description: بيانات المتجر
+          description: بيانات المتجر (الشكل يعتمد على وجود جلسة — راجع الوصف)
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/StoreResponse'
+                oneOf:
+                - $ref: '#/components/schemas/StoreResponse'
+                - $ref: '#/components/schemas/StorePublicResponse'
         '404':
           description: غير موجود
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+      description: 'CR-017: جلسة موجودة → الاستجابة الكاملة كما كانت قبل CR-017 حرفيًا (StoreResponse،
+        بلا تغيير في أي شرط). لا جلسة → عام، مقصور على status=''active'' (404 لغيره)، StorePublicResponse
+        (بلا owner_user_ref_id).'
   /api/v1/store/stores/{storeId}/status:
     post:
       operationId: updateStoreStatus
@@ -3646,10 +3669,10 @@ paths:
       description: 'status_filter افتراضيًا (أو ''approved'' صراحة): قراءة عامة، لا جلسة. أي حالة أخرى
         (proposed/archived): يتطلب جلسة صالحة + دور super_admin/admin (نفس صلاحية /parts/{id}/approve)
         — 401 لغياب الجلسة، 403 لجلسة بلا الدور المطلوب.'
-      x-traceability: *id001
+      x-traceability: *id002
       security: []
       parameters:
-      - *id002
+      - *id003
       - name: status_filter
         in: query
         schema:
@@ -3697,14 +3720,9 @@ paths:
   /api/v1/pct/parts/{partId}:
     get:
       operationId: getCatalogPart
-      summary: عرض تفاصيل قطعة كتالوج بمعرّفها
-      x-traceability:
-        requirements:
-        - REQ-PCT-001
-        - REQ-PCT-002
-        decisions: []
-      security:
-      - sessionAuth: []
+      summary: 'عرض تفاصيل قطعة كتالوج بمعرّفها (Dual-mode: عام لـapproved، بجلسة لغيره)'
+      x-traceability: *id001
+      security: []
       parameters:
       - $ref: '#/components/parameters/CorrelationIdHeader'
       - name: partId
@@ -3726,6 +3744,9 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+      description: 'CR-017: approved → عام بالكامل، بلا جلسة. غير ذلك (proposed/archived) → بلا تغيير
+        عن السلوك السابق: يتطلب أي جلسة صالحة (401 لغيابها)، بلا فحص دور إضافي — لم نُقيِّد هذا المسار
+        أكثر مما كان.'
   /api/v1/pct/parts/{partId}/approve:
     post:
       operationId: approveCatalogPart
@@ -4334,11 +4355,11 @@ paths:
     get:
       operationId: listMyPurchaseRequests
       summary: قائمة طلبات الشراء الخاصة بالمستخدم الحالي
-      x-traceability: *id001
+      x-traceability: *id002
       security:
       - sessionAuth: []
       parameters:
-      - *id002
+      - *id003
       - name: status_filter
         in: query
         schema:
@@ -4367,11 +4388,11 @@ paths:
       operationId: listPurchaseRequestOffers
       summary: قائمة العروض على طلب شراء محدد (النطاق حسب صلاحية الطالب)
       description: 'صاحب طلب الشراء يرى كل العروض؛ بائع (يملك متجرًا) يرى عرضه هو فقط. غير ذلك: 403.'
-      x-traceability: *id001
+      x-traceability: *id002
       security:
       - sessionAuth: []
       parameters:
-      - *id002
+      - *id003
       - name: prId
         in: path
         required: true
@@ -4417,11 +4438,11 @@ paths:
     get:
       operationId: listMyInventoryItems
       summary: قائمة عناصر مخزون متجر البائع الحالي (مالك المتجر فقط، كل الحقول)
-      x-traceability: *id001
+      x-traceability: *id002
       security:
       - sessionAuth: []
       parameters:
-      - *id002
+      - *id003
       - name: status_filter
         in: query
         schema:
@@ -4461,10 +4482,10 @@ paths:
       operationId: listStorePublicInventoryItems
       summary: عناصر مخزون متجر معيّن — عرض عام محدود الحقول (لصفحة المتجر)
       description: لا يُعيد أبدًا عناصر بحالة hidden أو archived. Schema منفصل تمامًا عن عرض المالك.
-      x-traceability: *id001
+      x-traceability: *id002
       security: []
       parameters:
-      - *id002
+      - *id003
       - name: storeId
         in: path
         required: true
@@ -4496,11 +4517,11 @@ paths:
       summary: قائمة محادثات المستخدم الحالي (Inbox)
       description: يعتمد على 027_com_conversation_participants.sql (عضوية صريحة). لا unread_count (راجع
         وصف ConversationSummaryResponse).
-      x-traceability: *id001
+      x-traceability: *id002
       security:
       - sessionAuth: []
       parameters:
-      - *id002
+      - *id003
       - name: page
         in: query
         schema:
@@ -4546,6 +4567,36 @@ paths:
                 $ref: '#/components/schemas/MeResponse'
         '401':
           description: لا جلسة صالحة
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/inventory/items/{itemId}/public:
+    get:
+      operationId: getInventoryItemPublic
+      summary: تفاصيل عنصر مخزون منفرد للعموم
+      description: 'CR-017: عام بالكامل، بلا جلسة. مسار مسطَّح بمعرّف العنصر فقط (لا storeId) عمدًا —
+        نتائج البحث (SearchResultItem) تحمل inventory_item_id فقط، لا store_id. لا يُعيد أبدًا عناصر hidden/archived
+        (404 بدل الكشف عن وجودها)، نفس قيد GET /store/stores/{storeId}/inventory-items بالضبط.'
+      x-traceability: *id001
+      security: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: itemId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: تفاصيل عنصر المخزون (عرض عام محدود الحقول)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InventoryItemPublicResponse'
+        '404':
+          description: العنصر غير موجود، أو مخفي/مؤرشَف (لا تمييز بين الحالتين للعموم)
           content:
             application/json:
               schema:
