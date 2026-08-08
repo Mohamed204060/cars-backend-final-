@@ -370,3 +370,25 @@ def list_store_public_inventory_items(
         items=[_to_public_response(i) for i in items],
         pagination=PaginationMeta(page=page, page_size=page_size, total_items=total),
     )
+
+
+@router.get("/inventory/items/{item_id}/public", response_model=InventoryItemPublicResponse)
+def get_item_public(
+    item_id: str,
+    correlation_id: str = Depends(get_correlation_id),
+    inventory_repo=Depends(get_inventory_repository),
+):
+    """
+    CR-017: تفاصيل عنصر مخزون منفرد للعموم — عام بالكامل، بلا جلسة. مسار
+    مسطَّح بمعرّف العنصر فقط (لا storeId في المسار) عمدًا: نتائج البحث
+    (SearchResultItem) تحمل inventory_item_id فقط، لا store_id — تعشيش
+    المسار تحت متجر كان سيكسر تدفّق "اضغط على نتيجة بحث" مباشرة.
+
+    لا يُعيد أبدًا عناصر hidden/archived (404 بدل الكشف عن وجودها) — نفس
+    قيد GET /store/stores/{storeId}/inventory-items بالضبط. يعيد نفس
+    InventoryItemPublicResponse الموجودة أصلًا، بلا Schema جديدة.
+    """
+    item = inventory_repo.get_item_by_id(item_id)
+    if item is None or item.status not in ("active", "out_of_stock"):
+        raise error(correlation_id, status.HTTP_404_NOT_FOUND, "ITEM_NOT_FOUND", "العنصر غير موجود.")
+    return _to_public_response(item)
