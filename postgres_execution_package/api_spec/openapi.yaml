@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: منصة قطع غيار السيارات - Auto Parts Marketplace API
-  version: 1.13.0
+  version: 1.14.0
   description: 'مواصفة API تنفيذية، تغطي 15 عملية (Operations) عبر 14 مسارًا (Paths): الواجهات التمثيلية
     الخمس الأصلية الموثّقة بالتفصيل في التصميم التفصيلي (الحزمة 2)، بالإضافة إلى 5 عمليات خدمة Auth (اعتماد
     Contract Extension & Implementation Plan): تسجيل خروج، عرض/إضافة/إزالة وسائل الهوية، وعرض مزوّدي الهوية
@@ -209,6 +209,9 @@ components:
           type: string
         part_name:
           type: string
+        store_id:
+          type: string
+          format: uuid
         store_name:
           type: string
         image_url:
@@ -1329,6 +1332,51 @@ components:
       - user_id
       - primary_role
       - account_type
+    InventoryItemPublicDetailResponse:
+      type: object
+      description: 'CR-019: توسيع مخصَّص لمسار التفاصيل المفرد فقط — منفصلة تمامًا عن InventoryItemPublicResponse
+        (تخدم القائمة العامة تحت متجر، بلا تغيير). part_name من pct.localized_names (canonical). condition_code
+        هو ref.ref_values.code الخام — لا عمود Label مترجَم موجود في نموذج البيانات الحالي، فلا يُدَّعى
+        وجود ترجمة. لا store_name (GAP-A: Store Public Identity، منفصلة) ولا صورة (GAP-B: Inventory Photos،
+        منفصلة، تحتاج Migration). لا owner_user_ref_id ولا quantity ولا business_code.'
+      properties:
+        id:
+          type: string
+          format: uuid
+        store_id:
+          type: string
+          format: uuid
+        catalog_part_ref_id:
+          type: string
+          format: uuid
+        condition_ref_id:
+          type: string
+          format: uuid
+        part_name:
+          type: string
+          nullable: true
+          description: من pct.localized_names (name_kind='canonical')؛ null إن لم يوجد اسم مُدرَج.
+        condition_code:
+          type: string
+          nullable: true
+          description: ref.ref_values.code الخام؛ null إن لم يُعثَر على القيمة المرجعية.
+        pricing_mode:
+          type: string
+          enum:
+          - fixed_price
+          - contact_for_price
+        price_amount:
+          type: number
+          nullable: true
+        price_currency:
+          type: string
+          nullable: true
+      required:
+      - id
+      - store_id
+      - catalog_part_ref_id
+      - condition_ref_id
+      - pricing_mode
 paths:
   /api/v1/subscriptions/plans:
     post:
@@ -4630,11 +4678,17 @@ paths:
   /api/v1/inventory/items/{itemId}/public:
     get:
       operationId: getInventoryItemPublic
-      summary: تفاصيل عنصر مخزون منفرد للعموم
-      description: 'CR-017: عام بالكامل، بلا جلسة. مسار مسطَّح بمعرّف العنصر فقط (لا storeId) عمدًا —
-        نتائج البحث (SearchResultItem) تحمل inventory_item_id فقط، لا store_id. لا يُعيد أبدًا عناصر hidden/archived
-        (404 بدل الكشف عن وجودها)، نفس قيد GET /store/stores/{storeId}/inventory-items بالضبط.'
-      x-traceability: *id001
+      summary: تفاصيل عنصر مخزون منفرد للعموم (موسَّعة — CR-019)
+      description: 'CR-017 (الأساس، عام بلا جلسة، يستبعد hidden/archived) + CR-019 (توسيع الحقول عبر استعلام
+        JOIN مخصَّص، لا تغيير على مسار المالك): store_id حقيقي من العمود المباشر، part_name من pct.localized_names،
+        condition_code من ref.ref_values.code. لا store_name، لا صورة (فجوتان مسجَّلتان مستقلتان: GAP-A،
+        GAP-B).'
+      x-traceability:
+        requirements: []
+        decisions:
+        - CR-017
+        - CR-019
+        x-gap-note: توسيع حقول CR-019 فوق أساس CR-017 — لا REQ سابق، لا Migration.
       security: []
       parameters:
       - $ref: '#/components/parameters/CorrelationIdHeader'
@@ -4646,11 +4700,11 @@ paths:
           format: uuid
       responses:
         '200':
-          description: تفاصيل عنصر المخزون (عرض عام محدود الحقول)
+          description: تفاصيل عنصر المخزون الموسَّعة (عرض عام محدود الحقول)
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/InventoryItemPublicResponse'
+                $ref: '#/components/schemas/InventoryItemPublicDetailResponse'
         '404':
           description: العنصر غير موجود، أو مخفي/مؤرشَف (لا تمييز بين الحالتين للعموم)
           content:
