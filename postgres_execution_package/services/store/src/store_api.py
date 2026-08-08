@@ -14,7 +14,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Request, status
 from pydantic import BaseModel
 
-from auth_api import error, get_correlation_id, get_current_session
+from auth_api import error, get_correlation_id, get_current_session, get_optional_session
 from pct_api import SYSTEM_ADMIN_ROLES, get_auth_repository_for_role_check
 from session_service import Session
 from store_service import (
@@ -39,6 +39,16 @@ class StoreCreateRequest(BaseModel):
 class StoreResponse(BaseModel):
     id: str
     owner_user_ref_id: str
+    status: str
+    country_ref_id: Optional[str] = None
+    city_ref_id: Optional[str] = None
+
+
+class StorePublicResponse(BaseModel):
+    """CR-017: عرض عام — يستبعد owner_user_ref_id عمدًا (تسريب خصوصية:
+    يكشف هوية صاحب المتجر). مقصور على المتاجر status='active' فقط؛ غير
+    ذلك 404 (لا كشف وجود متجر معلَّق/قيد الإنشاء/مؤرشَف للعموم)."""
+    id: str
     status: str
     country_ref_id: Optional[str] = None
     city_ref_id: Optional[str] = None
@@ -72,6 +82,11 @@ def _to_response(store) -> StoreResponse:
                           country_ref_id=store.country_ref_id, city_ref_id=store.city_ref_id)
 
 
+def _to_public_response(store) -> StorePublicResponse:
+    return StorePublicResponse(id=store.id, status=store.status,
+                                country_ref_id=store.country_ref_id, city_ref_id=store.city_ref_id)
+
+
 @router.post("/stores", response_model=StoreResponse, status_code=status.HTTP_201_CREATED)
 def create_store(
     body: StoreCreateRequest,
@@ -92,17 +107,30 @@ def create_store(
     return _to_response(store)
 
 
-@router.get("/stores/{store_id}", response_model=StoreResponse)
+@router.get("/stores/{store_id}", response_model=None)
 def get_store(
     store_id: str,
     correlation_id: str = Depends(get_correlation_id),
-    current_session: Session = Depends(get_current_session),
+    current_session: Session | None = Depends(get_optional_session),
     store_repo=Depends(get_store_repository),
-):
+) -> StoreResponse | StorePublicResponse:
+    """
+    CR-017: جلسة موجودة → **بلا تغيير عن السلوك الحالي إطلاقًا** (StoreResponse
+    الكاملة، أي حالة، بلا فحص ownership أو دور — نفس ما كان عليه الأمر قبل
+    CR-017 تمامًا). لا جلسة → عام، مقصور على status='active' فقط (404 لغير
+    ذلك، لا كشف وجود متجر معلَّق/مؤرشَف)، StorePublicResponse (بلا
+    owner_user_ref_id).
+    """
     store = store_repo.get_store_by_id(store_id)
     if store is None:
         raise error(correlation_id, status.HTTP_404_NOT_FOUND, "STORE_NOT_FOUND", "المتجر غير موجود.")
-    return _to_response(store)
+
+    if current_session is not None:
+        return _to_response(store)
+
+    if store.status != "active":
+        raise error(correlation_id, status.HTTP_404_NOT_FOUND, "STORE_NOT_FOUND", "المتجر غير موجود.")
+    return _to_public_response(store)
 
 
 @router.get("/stores", response_model=StoreListResponse)
