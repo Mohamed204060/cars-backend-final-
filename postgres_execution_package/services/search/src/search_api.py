@@ -5,13 +5,18 @@ search_api.py — طبقة REST API لخدمة البحث (SRC)
 
 ملاحظتا نطاق (لا تُخفيان، موثَّقتان صراحة):
 1. معاملَا q (نص حر) وsort (ترتيب مخصَّص) موجودان في العقد لكن غير مُنفَّذين
-   في search_service.py على الإطلاق؛ يُقبَلان في الطلب دون أي أثر حاليًا.
+   في search_service.py على الإطلاق؛ يُقبَلان في الطلب دون أي أثر حاليًا
+   (فجوة مستقلة قيد الفحص خارج نطاق CR-019).
 2. account_country_code/geolocation_country_code/ip_country_code (REQ-SRC-006-C)
    تتطلب مصادر بيانات غير متوفرة بعد (حساب المستخدم، تحديد موقع، قاعدة IP)؛
    يُستخدَم country_ref_id المُرسَل من العميل مباشرة كـmanual_country_code
    فقط (المصدر الوحيد الفعلي المتاح حاليًا عبر العقد).
 3. image_url ليس له أي تخزين أو منطق في الكود؛ يُعاد null دائمًا (لا نظام
-   صور مبني بعد). price_display_text يُشتَق محليًا هنا (REQ-STR-014).
+   صور مبني بعد؛ GAP-B مسجَّلة مستقلة). price_display_text يُشتَق محليًا
+   هنا (REQ-STR-014).
+4. CR-019: store_id أصبح حقلًا حقيقيًا في SearchResultItem الآن — كان
+   مجلوبًا فعليًا في InventoryItemView.store_ref_id منذ البداية لكن غير
+   معروض؛ لا تغيير على أي استعلام SQL، إضافة Mapping فقط.
 """
 
 from typing import Optional
@@ -29,6 +34,7 @@ class SearchResultItem(BaseModel):
     inventory_item_id: str
     business_code: str
     part_name: str
+    store_id: str
     store_name: str
     image_url: Optional[str] = None
     price_amount: Optional[float] = None
@@ -91,7 +97,7 @@ def search_parts(
     items = [
         SearchResultItem(
             inventory_item_id=i.id, business_code=i.business_code, part_name=i.part_name,
-            store_name=i.store_name, image_url=None,
+            store_id=i.store_ref_id, store_name=i.store_name, image_url=None,
             price_amount=i.price_amount, price_display_text=_price_display_text(i.price_amount),
         )
         for i in result["results"]
