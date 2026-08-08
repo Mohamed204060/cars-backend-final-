@@ -9,7 +9,7 @@ cnt_api.py — طبقة REST API لخدمة إدارة المحتوى (CNT)
 from fastapi import APIRouter, Depends, Request, status
 from pydantic import BaseModel
 
-from auth_api import error, get_correlation_id, get_current_session
+from auth_api import error, get_correlation_id, get_current_session, get_optional_session
 from session_service import Session
 from cnt_service import EmptyArticleFieldError, create_article_via_repository, publish_article_via_repository, unpublish_article_via_repository
 
@@ -70,9 +70,11 @@ def create_article(
 @router.get("", response_model=list[ArticleResponse])
 def list_published_articles(
     correlation_id: str = Depends(get_correlation_id),
-    current_session: Session = Depends(get_current_session),
     cnt_repo=Depends(get_cnt_repository),
 ):
+    """CR-017: عام بالكامل — لا جلسة مطلوبة. get_published_articles() في
+    المستودع مُصفَّاة أصلًا إلى status='published' فقط، فلا حاجة لأي فحص
+    صلاحية هنا (current_session لم يكن يُستخدَم في جسم الدالة أصلًا)."""
     return [_to_response(a) for a in cnt_repo.get_published_articles()]
 
 
@@ -80,12 +82,23 @@ def list_published_articles(
 def get_article(
     article_id: str,
     correlation_id: str = Depends(get_correlation_id),
-    current_session: Session = Depends(get_current_session),
+    current_session: Session | None = Depends(get_optional_session),
     cnt_repo=Depends(get_cnt_repository),
 ):
+    """
+    CR-017: مقال منشور (published) → عام بالكامل، بلا جلسة. غير ذلك
+    (unpublished) → **بلا تغيير عن السلوك الحالي**: يتطلب جلسة صالحة (أي
+    جلسة، بلا فحص دور — نفس ما كان عليه الأمر قبل CR-017 تمامًا؛ لم نُضِف
+    قيدًا جديدًا على المسار الحالي، فقط أضفنا مسارًا عامًا جديدًا للمنشور).
+    """
     article = cnt_repo.get_article_by_id(article_id)
     if article is None:
         raise error(correlation_id, status.HTTP_404_NOT_FOUND, "ARTICLE_NOT_FOUND", "المقال غير موجود.")
+
+    if article.status != "published" and current_session is None:
+        raise error(correlation_id, status.HTTP_401_UNAUTHORIZED, "NO_SESSION",
+                    "يتطلب عرض هذا المقال تسجيل الدخول.")
+
     return _to_response(article)
 
 
