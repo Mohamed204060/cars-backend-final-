@@ -146,12 +146,22 @@ def list_parts(
 def get_part(
     part_id: str,
     correlation_id: str = Depends(get_correlation_id),
-    current_session: Session = Depends(get_current_session),
+    current_session: Session | None = Depends(get_optional_session),
     pct_repo=Depends(get_pct_repository),
 ):
+    """
+    CR-017: قطعة معتمدة (approved) → عامة بالكامل، بلا جلسة. غير ذلك
+    (proposed/archived) → **بلا تغيير عن السلوك الحالي**: يتطلب جلسة صالحة
+    (أي جلسة، بلا فحص دور — نفس ما كان عليه الأمر قبل CR-017 تمامًا).
+    """
     part = pct_repo.get_part_by_id(part_id)
     if part is None:
         raise error(correlation_id, status.HTTP_404_NOT_FOUND, "PART_NOT_FOUND", "قطعة الكتالوج غير موجودة.")
+
+    if part.status != "approved" and current_session is None:
+        raise error(correlation_id, status.HTTP_401_UNAUTHORIZED, "NO_SESSION",
+                    "يتطلب عرض هذه القطعة تسجيل الدخول.")
+
     return _to_part_response(part)
 
 
