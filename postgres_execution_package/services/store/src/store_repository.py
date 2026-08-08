@@ -59,6 +59,12 @@ class PostgresStoreRepository(StoreRepository):
     def __init__(self, connection):
         self._connection = connection
 
+    @property
+    def connection(self):
+        """CR-018: وصول عام صريح — يلزم registration_service.py للتحقق أن
+        هذا الاتصال هو نفسه المشترَك مع auth_repo (نفس معاملة واحدة)."""
+        return self._connection
+
     def insert_store(self, store: Store) -> Store:
         # REQ-STR-001: الإنشاء التلقائي؛ عملية إدراج واحدة، لا تستوجب معاملة متعددة الخطوات هنا
         query = """
@@ -161,6 +167,12 @@ class InMemoryStoreRepository(StoreRepository):
         self._stores = {}
         self._next_seq = 1
 
+    @property
+    def connection(self):
+        """CR-018: لا معاملة حقيقية في الذاكرة — نفس منطق InMemoryAuthRepository
+        بالضبط (تكرار صغير مقصود بدل وحدة مشترَكة جديدة، يطابق حجم CR-018)."""
+        return _NoOpStoreTransaction()
+
     def insert_store(self, store: Store) -> Store:
         store.id = f"store-{self._next_seq}"
         self._next_seq += 1
@@ -195,3 +207,13 @@ class InMemoryStoreRepository(StoreRepository):
         total = len(items)
         start = (page - 1) * page_size
         return items[start:start + page_size], total
+
+
+class _NoOpStoreTransaction:
+    """CR-018: يحاكي واجهة `with connection:` لـpsycopg2 بلا أي سلوك فعلي."""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        return False
