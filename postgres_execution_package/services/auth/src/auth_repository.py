@@ -83,6 +83,23 @@ class AuthRepository(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def create_user_and_identity_no_commit(
+        self, primary_role: str, account_type: str,
+        provider_code: str, external_identifier: str, raw_password: str,
+    ):
+        """
+        CR-018: بدائية صريحة "بلا Commit" — الفرق عمدًا عن
+        create_user_and_primary_identity أعلاه (التي تبقى بلا أي تعديل،
+        Dead Code كما كانت): هذه تتيح لطبقة تنسيق خارجية (registration_service.py)
+        فتح معاملة واحدة تشمل إدراج متجر بائع أيضًا عند الحاجة، بدل الالتزام
+        بمعاملة مغلقة على نفسها هنا. لا commit ولا rollback داخل هذه الدالة
+        إطلاقًا — مسؤولية الطرف المستدعي حصرًا عبر `connection` أعلاه.
+        يقبل primary_role/account_type كمعاملين صريحين (لا قيمة ثابتة
+        مفروضة، خلافًا للدالة القديمة). يُعيد (user_id, UserIdentity).
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     def get_user_role(self, user_id: str) -> Optional[str]:
         """تعديل PCT Contract Extension — فحص صلاحية موضعي (لا RBAC كامل):
         يُعيد iam.users.primary_role الفعلي، أو None إن لم يكن المستخدم موجودًا."""
@@ -105,6 +122,13 @@ class PostgresAuthRepository(AuthRepository):
 
     def __init__(self, connection):
         self._connection = connection
+
+    @property
+    def connection(self):
+        """CR-018: وصول عام صريح للاتصال المشترَك — يلزم طبقة التنسيق
+        (registration_service.py) لفتح معاملة واحدة تُغلِّف IAM وSTR معًا.
+        لا يُستخدَم لأي غرض آخر."""
+        return self._connection
 
     def get_enabled_providers(self) -> List[IdentityProvider]:
         # يعتمد على uq_identity_providers_code (فحص is_enabled مباشرة، لا فهرس إضافي مطلوب لجدول صغير الحجم)
@@ -265,6 +289,48 @@ class PostgresAuthRepository(AuthRepository):
             row = cur.fetchone()
         return (row["primary_role"], row["status"]) if row else None
 
+    def create_user_and_identity_no_commit(
+        self, primary_role: str, account_type: str,
+        provider_code: str, external_identifier: str, raw_password: str,
+    ):
+        """لا with self._connection هنا عمدًا — بلا Commit ذاتي، خلافًا لكل
+        الدوال الأخرى في هذا الملف. الطرف المستدعي (registration_service.py)
+        يتحكم بالمعاملة عبر connection أعلاه."""
+        credential_secret_hash = hash_password(raw_password)
+        cur = self._connection.cursor()
+        cur.execute(
+            "INSERT INTO iam.users (business_code, primary_role, account_type) "
+            "VALUES (replace(gen_random_uuid()::text, '-', ''), %(primary_role)s, %(account_type)s) "
+            "RETURNING id",
+            {"primary_role": primary_role, "account_type": account_type},
+        )
+        user_id = cur.fetchone()["id"]
+
+        try:
+            cur.execute(
+                "INSERT INTO iam.user_identities "
+                "(user_id, provider_type_id, external_identifier, credential_secret_hash, verified_at, is_primary) "
+                "SELECT %(user_id)s, ip.id, %(external_identifier)s, %(credential_secret_hash)s, NULL, true "
+                "FROM iam.identity_providers ip WHERE ip.code = %(provider_code)s "
+                "RETURNING id",
+                {"user_id": user_id, "provider_code": provider_code,
+                 "external_identifier": external_identifier, "credential_secret_hash": credential_secret_hash},
+            )
+        except Exception as exc:
+            if "UniqueViolation" in type(exc).__name__ or "unique" in str(exc).lower():
+                raise DuplicateIdentityError(
+                    f"وسيلة الهوية '{external_identifier}' مرتبطة بحساب آخر بالفعل."
+                ) from exc
+            raise
+        identity_id = cur.fetchone()["id"]
+        cur.close()
+
+        identity = UserIdentity(
+            id=identity_id, user_id=user_id, provider_code=provider_code,
+            external_identifier=external_identifier, is_verified=False, is_primary=True,
+        )
+        return user_id, identity
+
     def create_user_and_primary_identity(self, provider_code: str, external_identifier: str, is_verified: bool):
         """
         معاملة قاعدة بيانات واحدة تجمع الخطوتين: لا commit ضمني بين
@@ -411,6 +477,33 @@ class InMemoryAuthRepository(AuthRepository):
         self._next_user_seq += 1
         return new_id
 
+    @property
+    def connection(self):
+        """CR-018: لا معاملة حقيقية في الذاكرة — Context Manager وهمي فقط
+        كي يعمل نفس كود registration_service.py بلا فرع خاص للاختبارات.
+        تنبيه صادق: هذا لا يوفّر Rollback حقيقيًا عند فشل جزئي؛ الذرّية
+        الفعلية تُختبَر فقط عبر اختبارات Postgres التكاملية، لا هنا."""
+        return _NoOpTransaction()
+
+    def create_user_and_identity_no_commit(
+        self, primary_role: str, account_type: str,
+        provider_code: str, external_identifier: str, raw_password: str,
+    ):
+        existing = self.find_identity_by_provider_and_identifier(provider_code, external_identifier)
+        if existing is not None:
+            raise DuplicateIdentityError(f"وسيلة الهوية '{external_identifier}' مرتبطة بحساب آخر بالفعل.")
+
+        user_id = self.create_user()
+        self.set_user_role(user_id, primary_role)
+        identity = UserIdentity(
+            id=f"identity-{self._next_identity_seq}", user_id=user_id, provider_code=provider_code,
+            external_identifier=external_identifier, is_verified=False, is_primary=True,
+        )
+        self._next_identity_seq += 1
+        self._identities.append(identity)
+        self._credential_hashes[identity.id] = hash_password(raw_password)
+        return user_id, identity
+
     def create_user_and_primary_identity(self, provider_code: str, external_identifier: str, is_verified: bool):
         """محاكاة الذرّية في الذاكرة: عملية بايثون واحدة غير قابلة للمقاطعة عمليًا لأغراض الاختبار."""
         user_id = self.create_user()
@@ -421,3 +514,14 @@ class InMemoryAuthRepository(AuthRepository):
         self._next_identity_seq += 1
         self._identities.append(identity)
         return user_id, identity
+
+
+class _NoOpTransaction:
+    """CR-018: يحاكي واجهة `with connection:` لـpsycopg2 بلا أي سلوك فعلي —
+    يُستخدَم فقط في InMemoryAuthRepository/InMemoryStoreRepository."""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        return False  # لا يُخمِد أي استثناء — ينتشر كما هو

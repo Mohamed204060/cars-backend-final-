@@ -21,7 +21,7 @@ auth_api.py — طبقة REST API لخدمة Auth (Controllers)
 
 import os
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Literal, Optional
 from uuid import uuid4
 
 from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Request, Response, status
@@ -48,6 +48,12 @@ from session_service import (
     generate_session_token,
     hash_token,
 )
+# CR-018: store_service (لا store_api) عمدًا — store_api.py يستورد أصلًا من
+# auth_api.py (get_current_session وغيرها)؛ استيراد عكسي هنا يُنشئ Circular
+# Import. store_service.py وحدة خدمة نقية بلا اعتماد على auth_api، آمنة.
+from store_service import create_store
+from registration_service import InvalidRegistrationChoiceError, register_user
+from password_policy import WeakPasswordError
 
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 
@@ -82,6 +88,23 @@ class LoginRequest(BaseModel):
 class LoginResponse(BaseModel):
     primary_role: Optional[str] = None
     account_status: Optional[str] = None
+
+
+class RegisterRequest(BaseModel):
+    """CR-018: role_choice/account_type مقيَّدان بنيويًا بـLiteral — لا قيمة
+    إدارية (admin/moderator/...) قابلة للوصول عبر هذا المسار إطلاقًا، بصرف
+    النظر عن أي فحص إضافي في registration_service.py."""
+    role_choice: Literal["buyer", "seller"]
+    account_type: Literal["individual", "business"]
+    email: str
+    password: str
+
+
+class RegisterResponse(BaseModel):
+    user_id: str
+    primary_role: str
+    account_type: str
+    store_id: Optional[str] = None
 
 
 class LogoutResponse(BaseModel):
@@ -159,6 +182,14 @@ def get_session_repository(request: Request):
     return request.app.state.session_repository
 
 
+def get_store_repository_for_registration(request: Request):
+    """CR-018: نسخة محلية مكرَّرة عمدًا من get_store_repository في
+    store_api.py — استيرادها من هناك مباشرة كان سيُنشئ Circular Import
+    (store_api.py يستورد من auth_api.py أصلًا). دالتان بسطر واحد، لا خطر
+    اختلاف سلوك حقيقي بينهما."""
+    return request.app.state.store_repository
+
+
 async def get_current_session(
     correlation_id: str = Depends(get_correlation_id),
     session_id: Optional[str] = Cookie(default=None, alias=SESSION_COOKIE_NAME),
@@ -228,6 +259,48 @@ def clear_session_cookie(response: Response) -> None:
 # ---------------------------------------------------------------------------
 # POST /auth/login — REQ-IAM-003، REQ-SEC-004/007
 # ---------------------------------------------------------------------------
+
+@router.post("/register", response_model=RegisterResponse, status_code=status.HTTP_201_CREATED)
+def register(
+    body: RegisterRequest,
+    response: Response,
+    correlation_id: str = Depends(get_correlation_id),
+    auth_repo=Depends(get_auth_repository),
+    store_repo=Depends(get_store_repository_for_registration),
+    session_repo=Depends(get_session_repository),
+):
+    """
+    CR-018 — REQ-IAM-001/002/006، REQ-STR-001، REQ-SEC-006. طبقة رقيقة فقط:
+    كل منطق Mapping/المعاملة/Business Rules في registration_service.py،
+    لا هنا. بعد النجاح: تسجيل دخول تلقائي بنفس آلية POST /login حرفيًا
+    (نفس الدوال: generate_session_token/hash_token/compute_expiry/
+    session_repo.create_session/set_session_cookie) — لا آلية جلسة جديدة.
+    """
+    try:
+        result = register_user(
+            auth_repo, store_repo, create_store,
+            role_choice=body.role_choice, account_type=body.account_type,
+            email=body.email, raw_password=body.password,
+        )
+    except WeakPasswordError as exc:
+        raise error(correlation_id, status.HTTP_400_BAD_REQUEST, "WEAK_PASSWORD", str(exc))
+    except InvalidRegistrationChoiceError as exc:
+        raise error(correlation_id, status.HTTP_400_BAD_REQUEST, "INVALID_REGISTRATION_CHOICE", str(exc))
+    except DuplicateIdentityError as exc:
+        raise error(correlation_id, status.HTTP_409_CONFLICT, "IDENTITY_ALREADY_EXISTS", str(exc))
+
+    raw_token = generate_session_token()
+    token_hash = hash_token(raw_token)
+    expires_at = compute_expiry(datetime.now(timezone.utc), IDLE_TIMEOUT_SECONDS)
+    session_repo.create_session(user_id=result.user_id, token_hash=token_hash, expires_at=expires_at)
+
+    set_session_cookie(response, raw_token)
+    response.headers["X-Correlation-Id"] = correlation_id
+    return RegisterResponse(
+        user_id=result.user_id, primary_role=result.primary_role,
+        account_type=result.account_type, store_id=result.store_id,
+    )
+
 
 @router.post("/login", response_model=LoginResponse)
 def login(
