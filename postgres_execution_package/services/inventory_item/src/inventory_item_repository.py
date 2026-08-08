@@ -11,7 +11,7 @@ from abc import ABC, abstractmethod
 from typing import Optional, List
 import uuid
 
-from inventory_item_service import InventoryItem
+from inventory_item_service import InventoryItem, InventoryItemPublicDetailView
 
 
 class InventoryItemRepository(ABC):
@@ -48,6 +48,17 @@ class InventoryItemRepository(ABC):
     def list_public_items_for_store_paginated(self, store_id: str, page: int,
                                                page_size: int) -> "tuple[List[InventoryItem], int]":
         """يستبعد دومًا حالتَي hidden وarchived على مستوى الاستعلام نفسه — لا بعد الجلب."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_public_detail(self, item_id: str) -> Optional[InventoryItemPublicDetailView]:
+        """
+        CR-019: دالة مخصَّصة منفصلة تمامًا عن get_item_by_id (لا تغيير على
+        دلالتها أو الاستعلام الذي يخدم مسار المالك). تُنفِّذ JOIN لاسم
+        القطعة (نمط search_repository.py حرفيًا) — لا store_name، لا صورة.
+        تُعيد None فقط لعدم الوجود؛ فحص حالة hidden/archived مسؤولية طبقة
+        الخدمة (get_public_item_detail_via_repository)، لا هنا.
+        """
         raise NotImplementedError
 
 
@@ -160,6 +171,32 @@ class PostgresInventoryItemRepository(InventoryItemRepository):
             rows = cur.fetchall()
         return [self._row_to_item(r) for r in rows], total
 
+    def get_public_detail(self, item_id: str) -> Optional[InventoryItemPublicDetailView]:
+        # LEFT JOIN عمدًا للاثنين (لا JOIN عادي): غياب اسم قطعة أو Ref Value
+        # لا ينبغي أن يُسقِط العنصر بالكامل من الظهور العام — نُعيد None لهذا
+        # الحقل تحديدًا فقط (يُعالَج في الواجهة، لا افتراض هنا).
+        query = """
+            SELECT ii.id, ii.store_id, ii.catalog_part_ref_id, ii.condition_ref_id,
+                   ii.pricing_mode, ii.price_amount, ii.price_currency, ii.status,
+                   pl.name_value AS part_name, rv.code AS condition_code
+            FROM str.inventory_items ii
+            LEFT JOIN pct.localized_names pl
+                ON pl.catalog_part_id = ii.catalog_part_ref_id AND pl.name_kind = 'canonical'
+            LEFT JOIN ref.ref_values rv ON rv.id = ii.condition_ref_id
+            WHERE ii.id = %(id)s
+        """
+        with self._connection.cursor() as cur:
+            cur.execute(query, {"id": item_id})
+            row = cur.fetchone()
+        if row is None:
+            return None
+        return InventoryItemPublicDetailView(
+            id=row["id"], store_id=row["store_id"], catalog_part_ref_id=row["catalog_part_ref_id"],
+            condition_ref_id=row["condition_ref_id"], part_name=row["part_name"],
+            condition_code=row["condition_code"], pricing_mode=row["pricing_mode"],
+            price_amount=row["price_amount"], price_currency=row["price_currency"], status=row["status"],
+        )
+
     @staticmethod
     def _row_to_item(row) -> InventoryItem:
         return InventoryItem(
@@ -177,6 +214,30 @@ class InMemoryInventoryItemRepository(InventoryItemRepository):
     def __init__(self):
         self._items = {}
         self._next_seq = 1
+        # CR-019: يحاكي JOIN إلى pct.localized_names وref.ref_values للاختبار
+        # فقط — تُعبَّأ صراحةً عبر set_part_name/set_condition_code أدناه؛
+        # غياب مفتاح = نفس سلوك LEFT JOIN الحقيقي (None، لا خطأ).
+        self._part_names: dict[str, str] = {}
+        self._condition_codes: dict[str, str] = {}
+
+    def set_part_name(self, catalog_part_ref_id: str, name: str) -> None:
+        self._part_names[catalog_part_ref_id] = name
+
+    def set_condition_code(self, condition_ref_id: str, code: str) -> None:
+        self._condition_codes[condition_ref_id] = code
+
+    def get_public_detail(self, item_id: str) -> Optional[InventoryItemPublicDetailView]:
+        item = self._items.get(item_id)
+        if item is None:
+            return None
+        return InventoryItemPublicDetailView(
+            id=item.id, store_id=item.store_id, catalog_part_ref_id=item.catalog_part_ref_id,
+            condition_ref_id=item.condition_ref_id,
+            part_name=self._part_names.get(item.catalog_part_ref_id),
+            condition_code=self._condition_codes.get(item.condition_ref_id),
+            pricing_mode=item.pricing_mode, price_amount=item.price_amount,
+            price_currency=item.price_currency, status=item.status,
+        )
 
     def insert_item(self, item: InventoryItem) -> InventoryItem:
         item.id = f"item-{self._next_seq}"

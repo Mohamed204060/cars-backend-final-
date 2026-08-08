@@ -33,6 +33,7 @@ from inventory_item_service import (
     hide_item_via_repository,
     list_my_inventory_items_via_repository,
     list_public_store_inventory_items_via_repository,
+    get_public_item_detail_via_repository,
     unhide_item_via_repository,
     update_pricing_via_repository,
     update_quantity_via_repository,
@@ -105,6 +106,26 @@ class InventoryItemPublicResponse(BaseModel):
 class InventoryItemPublicListResponse(BaseModel):
     items: list[InventoryItemPublicResponse]
     pagination: PaginationMeta
+
+
+class InventoryItemPublicDetailResponse(BaseModel):
+    """
+    CR-019: Schema منفصلة تمامًا عن InventoryItemPublicResponse أعلاه عمدًا —
+    الأخيرة تخدم القائمة العامة (list_public_items_for_store_paginated، لا
+    JOIN لاسم قطعة/حالة هناك، بلا تغيير عليها). هذه تخدم مسار التفاصيل
+    المفرد فقط عبر get_public_detail المخصَّصة. لا owner_user_ref_id ولا
+    quantity ولا business_code — نفس مبدأ الاستبعاد. لا store_name ولا صورة
+    (GAP-A/GAP-B مسجَّلتان مستقلتين، خارج نطاق CR-019 كما اعتُمد).
+    """
+    id: str
+    store_id: str
+    catalog_part_ref_id: str
+    condition_ref_id: str
+    part_name: Optional[str] = None
+    condition_code: Optional[str] = None
+    pricing_mode: str
+    price_amount: Optional[float] = None
+    price_currency: Optional[str] = None
 
 
 class QuantityUpdateRequest(BaseModel):
@@ -372,23 +393,30 @@ def list_store_public_inventory_items(
     )
 
 
-@router.get("/inventory/items/{item_id}/public", response_model=InventoryItemPublicResponse)
+@router.get("/inventory/items/{item_id}/public", response_model=InventoryItemPublicDetailResponse)
 def get_item_public(
     item_id: str,
     correlation_id: str = Depends(get_correlation_id),
     inventory_repo=Depends(get_inventory_repository),
 ):
     """
-    CR-017: تفاصيل عنصر مخزون منفرد للعموم — عام بالكامل، بلا جلسة. مسار
-    مسطَّح بمعرّف العنصر فقط (لا storeId في المسار) عمدًا: نتائج البحث
-    (SearchResultItem) تحمل inventory_item_id فقط، لا store_id — تعشيش
-    المسار تحت متجر كان سيكسر تدفّق "اضغط على نتيجة بحث" مباشرة.
+    CR-017 (الأساس) + CR-019 (توسيع الحقول): تفاصيل عنصر مخزون منفرد
+    للعموم — عام بالكامل، بلا جلسة. مسار مسطَّح بمعرّف العنصر فقط (لا
+    storeId في المسار) عمدًا: نتائج البحث (SearchResultItem) تحمل
+    inventory_item_id فقط.
 
-    لا يُعيد أبدًا عناصر hidden/archived (404 بدل الكشف عن وجودها) — نفس
-    قيد GET /store/stores/{storeId}/inventory-items بالضبط. يعيد نفس
-    InventoryItemPublicResponse الموجودة أصلًا، بلا Schema جديدة.
+    CR-019: يستخدم الآن get_public_detail المخصَّصة (لا get_item_by_id
+    مسار المالك) — تعيد store_id الحقيقي + اسم القطعة (JOIN pct.localized_names)
+    + condition_code الخام (JOIN ref.ref_values؛ ليس Label مترجَمًا، لا عمود
+    كهذا موجود أصلًا). لا يُعيد أبدًا عناصر hidden/archived (404 بدل الكشف
+    عن وجودها) — نفس قيد GET /store/stores/{storeId}/inventory-items بالضبط.
     """
-    item = inventory_repo.get_item_by_id(item_id)
-    if item is None or item.status not in ("active", "out_of_stock"):
+    detail = get_public_item_detail_via_repository(inventory_repo, item_id)
+    if detail is None:
         raise error(correlation_id, status.HTTP_404_NOT_FOUND, "ITEM_NOT_FOUND", "العنصر غير موجود.")
-    return _to_public_response(item)
+    return InventoryItemPublicDetailResponse(
+        id=detail.id, store_id=detail.store_id, catalog_part_ref_id=detail.catalog_part_ref_id,
+        condition_ref_id=detail.condition_ref_id, part_name=detail.part_name,
+        condition_code=detail.condition_code, pricing_mode=detail.pricing_mode,
+        price_amount=detail.price_amount, price_currency=detail.price_currency,
+    )

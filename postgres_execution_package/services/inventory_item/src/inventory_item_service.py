@@ -33,6 +33,33 @@ class InventoryItem:
     business_code: Optional[str] = None  # REQ-STR-018: معرّف أعمال ظاهر؛ يُسنَد عبر Repository
 
 
+@dataclass
+class InventoryItemPublicDetailView:
+    """
+    CR-019: نموذج قراءة مخصَّص لمسار التفاصيل العام فقط (Read Model، لا كيان
+    أصيل — نفس مبدأ InventoryItemView في search_service.py). متعمَّد كنوع
+    منفصل عن InventoryItem: لا نغيّر شكل/سلوك مسار المالك (get_item_by_id)
+    إطلاقًا لخدمة هذا المسار العام.
+
+    part_name: من pct.localized_names (name_kind='canonical') — نفس النمط
+               المُثبَت فعليًا في search_repository.py، لا استحداث جديد.
+    condition_code: **ليس Label مترجَمًا** — ref.ref_values لا يحمل عمود اسم
+               معروض/مترجَم إطلاقًا (تحقَّق من 002_ref.sql: id/ref_type/code/
+               status فقط)؛ هذا هو code الخام (مثل "used"، "new") لا أكثر،
+               موثَّق بصراحة في اسم الحقل ذاته لتفادي الإيحاء بترجمة غير موجودة.
+    """
+    id: str
+    store_id: str
+    catalog_part_ref_id: str
+    condition_ref_id: str
+    part_name: Optional[str]
+    condition_code: Optional[str]
+    pricing_mode: str
+    price_amount: Optional[float]
+    price_currency: Optional[str]
+    status: str
+
+
 class InvalidPricingError(Exception):
     """REQ-STR-012: تعارض بين سياسة التسعير والحقول المرفَقة."""
 
@@ -269,3 +296,14 @@ def list_public_store_inventory_items_via_repository(repository, store_id: str, 
     المطبَّق في order_service.py لعروض البائع).
     """
     return repository.list_public_items_for_store_paginated(store_id, page, page_size)
+
+
+def get_public_item_detail_via_repository(repository, item_id: str) -> Optional[InventoryItemPublicDetailView]:
+    """
+    CR-019: يعيد None لعنصر غير موجود أو بحالة hidden/archived — نفس قيد
+    الرؤية العامة المطبَّق في CR-017 حرفيًا (لا كشف وجود عنصر مخفي/مؤرشَف).
+    """
+    detail = repository.get_public_detail(item_id)
+    if detail is None or detail.status not in ("active", "out_of_stock"):
+        return None
+    return detail
