@@ -353,7 +353,10 @@ class TestCR017PublicInventoryItemDetail:
         body = resp.json()
         assert body["price_amount"] == 75.0
         assert "quantity" not in body
-        assert "store_id" not in body
+        # CR-019: store_id أصبح حقلًا معتمَدًا فعليًا في هذه الاستجابة تحديدًا
+        # (لم يكن كذلك في نطاق CR-017 الأصلي الأضيق) — لا تسريب owner، ذلك
+        # يبقى مستبعَدًا تمامًا (مؤكَّد أدناه في TestCR019).
+        assert body["store_id"]
 
     def test_hidden_item_returns_404_for_public(self, app_and_client):
         app, client = app_and_client
@@ -375,3 +378,69 @@ class TestCR017PublicInventoryItemDetail:
         _, client = app_and_client
         resp = client.get("/api/v1/inventory/items/ghost/public")
         assert resp.status_code == 404
+
+
+class TestCR019PublicDetailEnrichedFields:
+    """CR-019: store_id/part_name/condition_code في مسار التفاصيل العام
+    المخصَّص فقط (get_public_detail) — لا owner_user_ref_id، لا store_name
+    وهمي، لا صورة، لا Migration."""
+
+    def test_store_id_and_part_name_and_condition_code_present(self, app_and_client):
+        app, client = app_and_client
+        part_id = _make_approved_part(app, client)
+        _login_as(app, client, "seller15@example.com")
+        store_id = _make_own_store(client)
+
+        app.state.inventory_repository.set_part_name(part_id, "طرمبة بنزين")
+        app.state.inventory_repository.set_condition_code("cond-1", "used")
+
+        item_id = client.post(
+            "/api/v1/inventory-items", headers={"Idempotency-Key": "k-cr019-1"},
+            json={"catalog_part_ref_id": part_id, "condition_ref_id": "cond-1",
+                  "pricing_mode": "fixed_price", "price_amount": 90.0,
+                  "price_currency": "SAR", "quantity": 1},
+        ).json()["id"]
+        client.post("/api/v1/auth/logout")
+
+        resp = client.get(f"/api/v1/inventory/items/{item_id}/public")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["store_id"] == store_id
+        assert body["part_name"] == "طرمبة بنزين"
+        assert body["condition_code"] == "used"
+
+    def test_no_owner_user_ref_id_leak(self, app_and_client):
+        app, client = app_and_client
+        part_id = _make_approved_part(app, client)
+        _login_as(app, client, "seller16@example.com")
+        _make_own_store(client)
+        item_id = client.post(
+            "/api/v1/inventory-items", headers={"Idempotency-Key": "k-cr019-2"},
+            json={"catalog_part_ref_id": part_id, "condition_ref_id": "cond-1",
+                  "pricing_mode": "contact_for_price", "quantity": 1},
+        ).json()["id"]
+        client.post("/api/v1/auth/logout")
+
+        body = client.get(f"/api/v1/inventory/items/{item_id}/public").json()
+        assert "owner_user_ref_id" not in body
+        assert "store_name" not in body
+        assert "image_url" not in body
+
+    def test_missing_part_name_or_condition_resolves_to_null_not_error(self, app_and_client):
+        """لا set_part_name/set_condition_code هنا عمدًا — يحاكي غياب تطابق LEFT JOIN حقيقي."""
+        app, client = app_and_client
+        part_id = _make_approved_part(app, client)
+        _login_as(app, client, "seller17@example.com")
+        _make_own_store(client)
+        item_id = client.post(
+            "/api/v1/inventory-items", headers={"Idempotency-Key": "k-cr019-3"},
+            json={"catalog_part_ref_id": part_id, "condition_ref_id": "cond-1",
+                  "pricing_mode": "contact_for_price", "quantity": 1},
+        ).json()["id"]
+        client.post("/api/v1/auth/logout")
+
+        resp = client.get(f"/api/v1/inventory/items/{item_id}/public")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["part_name"] is None
+        assert body["condition_code"] is None

@@ -124,3 +124,25 @@ class TestEffectiveCountry:
         _, client = app_and_client
         resp = client.get("/api/v1/search/parts")
         assert resp.json()["effective_country_source"] == "none"
+
+
+class TestCR019StoreIdInSearchResults:
+    """CR-019: store_id حقيقي من InventoryItemView.store_ref_id — لا store_name وهمي جديد."""
+
+    def test_store_id_present_and_correct(self, app_and_client):
+        app, client = app_and_client
+        app.state.search_repository = InMemorySearchRepository(items=[_item(store_ref_id="store-xyz")])
+        resp = client.get("/api/v1/search/parts")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["results"][0]["store_id"] == "store-xyz"
+
+    def test_no_new_fake_store_name_or_image(self, app_and_client):
+        """يتحقق أن store_name يبقى كما يأتي من المستودع (لا تحسين وهمي)،
+        وأن image_url يبقى null دائمًا (GAP-B غير مُنفَّذة)."""
+        app, client = app_and_client
+        app.state.search_repository = InMemorySearchRepository(items=[_item(store_name="")])
+        resp = client.get("/api/v1/search/parts")
+        body = resp.json()
+        assert body["results"][0]["store_name"] == ""
+        assert body["results"][0]["image_url"] is None

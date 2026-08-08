@@ -174,3 +174,72 @@ class TestOwnershipOnLivePostgres:
         _register_and_login(client, conn, f"stranger{uuid.uuid4().hex[:6]}@example.com")
         resp = client.post(f"/api/v1/inventory/items/{item_id}/archive")
         assert resp.status_code == 403
+
+
+class TestCR019PublicDetailJoinsOnLivePostgres:
+    """CR-019: يتحقق من صحة نحو SQL الفعلي لـget_public_detail (JOIN حقيقي
+    إلى pct.localized_names وref.ref_values) — لا يمكن التحقق من صحة نحو
+    SQL بلا اتصال حي فعلي، py_compile لا يكتشف أخطاء SQL."""
+
+    def test_store_id_part_name_condition_code_resolved_via_real_joins(self, app_and_client):
+        app, client, conn = app_and_client
+        part_id = _make_approved_part(client, conn)
+
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO pct.localized_names (catalog_part_id, name_value, name_kind, locale) "
+            "VALUES (%s, %s, 'canonical', 'ar')",
+            (part_id, "طرمبة بنزين"),
+        )
+        cur.execute(
+            "INSERT INTO ref.ref_values (ref_type, code) VALUES ('part_condition', 'used') "
+            "ON CONFLICT (ref_type, code) DO NOTHING RETURNING id"
+        )
+        row = cur.fetchone()
+        if row is None:
+            cur.execute("SELECT id FROM ref.ref_values WHERE ref_type = 'part_condition' AND code = 'used'")
+            row = cur.fetchone()
+        condition_id = row["id"]
+
+        _register_and_login(client, conn, f"seller-cr019-{uuid.uuid4().hex[:8]}@example.com")
+        store_id = client.post("/api/v1/store/stores", json={}).json()["id"]
+        item_id = client.post(
+            "/api/v1/inventory-items", headers={"Idempotency-Key": f"k-{uuid.uuid4().hex[:8]}"},
+            json={"catalog_part_ref_id": part_id, "condition_ref_id": condition_id,
+                  "pricing_mode": "fixed_price", "price_amount": 120.0,
+                  "price_currency": "SAR", "quantity": 1},
+        ).json()["id"]
+        client.post("/api/v1/auth/logout")
+
+        resp = client.get(f"/api/v1/inventory/items/{item_id}/public")
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["store_id"] == store_id
+        assert body["part_name"] == "طرمبة بنزين"
+        assert body["condition_code"] == "used"
+        assert "owner_user_ref_id" not in body
+        assert "store_name" not in body
+        assert "image_url" not in body
+
+    def test_missing_localized_name_left_join_returns_null_not_error(self, app_and_client):
+        """قطعة معتمدة بلا اسم canonical مُدرَج أصلًا — LEFT JOIN يجب ألا يُسقِط الصف."""
+        app, client, conn = app_and_client
+        part_id = _make_approved_part(client, conn)  # لا name يُضاف عمدًا هنا
+
+        _register_and_login(client, conn, f"seller-cr019b-{uuid.uuid4().hex[:8]}@example.com")
+        client.post("/api/v1/store/stores", json={})
+        cur = conn.cursor()
+        cur.execute("SELECT id FROM ref.ref_values WHERE ref_type = 'part_condition' LIMIT 1")
+        row = cur.fetchone()
+        condition_id = row["id"] if row else str(uuid.uuid4())
+
+        item_id = client.post(
+            "/api/v1/inventory-items", headers={"Idempotency-Key": f"k-{uuid.uuid4().hex[:8]}"},
+            json={"catalog_part_ref_id": part_id, "condition_ref_id": condition_id,
+                  "pricing_mode": "contact_for_price", "quantity": 1},
+        ).json()["id"]
+        client.post("/api/v1/auth/logout")
+
+        resp = client.get(f"/api/v1/inventory/items/{item_id}/public")
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["part_name"] is None
