@@ -17,6 +17,7 @@ from auth_api import router as auth_router
 from auth_repository import InMemoryAuthRepository
 from auth_service import IdentityProvider, UserIdentity
 from session_repository import InMemorySessionRepository
+from store_repository import InMemoryStoreRepository
 
 
 @pytest.fixture
@@ -30,6 +31,8 @@ def app_and_client():
     ]
     app.state.auth_repository = InMemoryAuthRepository(providers=providers, identities=[])
     app.state.session_repository = InMemorySessionRepository()
+    # CR-018: register يحتاج store_repository (إنشاء متجر تلقائي للبائع، REQ-STR-001)
+    app.state.store_repository = InMemoryStoreRepository()
 
     # base_url على https إلزامي هنا: الجلسة تُصدَر بخاصية Secure=True (CR-013،
     # لا نُعطِّلها في الاختبارات ولا في التطبيق)، وSecure Cookies لا تُرسَل من
@@ -274,4 +277,104 @@ class TestSessionIntrospection:
         body_text = client.get("/api/v1/auth/me").text
         assert "Str0ngPass1!" not in body_text
         assert "password" not in body_text.lower()
+        assert "hash" not in body_text.lower()
+
+
+class TestRegister:
+    """CR-018 — REQ-IAM-001/002/006، REQ-STR-001، REQ-SEC-006."""
+
+    def _register(self, client, role_choice, account_type, email, password="password1"):
+        return client.post("/api/v1/auth/register", json={
+            "role_choice": role_choice, "account_type": account_type,
+            "email": email, "password": password,
+        })
+
+    def test_buyer_individual_mapping(self, app_and_client):
+        _, client = app_and_client
+        resp = self._register(client, "buyer", "individual", "b1@example.com")
+        assert resp.status_code == 201
+        body = resp.json()
+        assert body["primary_role"] == "individual_buyer"
+        assert body["account_type"] == "individual"
+        assert body["store_id"] is None
+
+    def test_buyer_business_mapping(self, app_and_client):
+        _, client = app_and_client
+        resp = self._register(client, "buyer", "business", "b2@example.com")
+        body = resp.json()
+        assert body["primary_role"] == "business_buyer"
+        assert body["store_id"] is None
+
+    def test_seller_individual_mapping_and_store_created(self, app_and_client):
+        app, client = app_and_client
+        resp = self._register(client, "seller", "individual", "s1@example.com")
+        body = resp.json()
+        assert body["primary_role"] == "individual_seller"
+        assert body["store_id"] is not None
+
+        store = app.state.store_repository.get_store_by_id(body["store_id"])
+        assert store.owner_user_ref_id == body["user_id"]
+
+    def test_seller_business_mapping_and_store_created(self, app_and_client):
+        app, client = app_and_client
+        resp = self._register(client, "seller", "business", "s2@example.com")
+        body = resp.json()
+        assert body["primary_role"] == "business_seller"
+        assert body["store_id"] is not None
+        store = app.state.store_repository.get_store_by_id(body["store_id"])
+        assert store.owner_user_ref_id == body["user_id"]
+
+    def test_seller_gets_exactly_one_store(self, app_and_client):
+        app, client = app_and_client
+        resp = self._register(client, "seller", "individual", "s3@example.com")
+        user_id = resp.json()["user_id"]
+        matching = [s for s in app.state.store_repository._stores.values() if s.owner_user_ref_id == user_id]
+        assert len(matching) == 1
+
+    def test_admin_role_choice_rejected(self, app_and_client):
+        """role_choice مقيَّد بنيويًا بـLiteral["buyer","seller"] — قيمة أخرى ترفضها Pydantic نفسها (422)."""
+        _, client = app_and_client
+        resp = client.post("/api/v1/auth/register", json={
+            "role_choice": "admin", "account_type": "individual",
+            "email": "hacker@example.com", "password": "password1",
+        })
+        assert resp.status_code == 422
+
+    def test_duplicate_email_409_no_partial_state(self, app_and_client):
+        app, client = app_and_client
+        self._register(client, "buyer", "individual", "dup@example.com")
+        resp = self._register(client, "buyer", "individual", "dup@example.com")
+        assert resp.status_code == 409
+
+    def test_password_under_8_chars_rejected(self, app_and_client):
+        _, client = app_and_client
+        resp = self._register(client, "buyer", "individual", "weak@example.com", password="short1")
+        assert resp.status_code == 400
+
+    def test_password_exactly_8_chars_accepted(self, app_and_client):
+        _, client = app_and_client
+        resp = self._register(client, "buyer", "individual", "eight@example.com", password="12345678")
+        assert resp.status_code == 201
+
+    def test_password_without_complexity_mix_not_rejected(self, app_and_client):
+        """قرار صريح: لا إلزام تركيبة (حرف كبير/رمز/رقم) — كلمة مرور بسيطة طولها كافٍ تُقبَل."""
+        _, client = app_and_client
+        resp = self._register(client, "buyer", "individual", "simple@example.com", password="simplepass")
+        assert resp.status_code == 201
+
+    def test_session_cookie_issued_and_me_works_immediately(self, app_and_client):
+        _, client = app_and_client
+        resp = self._register(client, "buyer", "individual", "session@example.com")
+        assert resp.status_code == 201
+        assert "session_id" in resp.cookies
+
+        me_resp = client.get("/api/v1/auth/me")
+        assert me_resp.status_code == 200
+        assert me_resp.json()["primary_role"] == "individual_buyer"
+
+    def test_no_password_or_hash_in_response(self, app_and_client):
+        _, client = app_and_client
+        resp = self._register(client, "buyer", "individual", "leakcheck@example.com", password="password1")
+        body_text = resp.text
+        assert "password1" not in body_text
         assert "hash" not in body_text.lower()

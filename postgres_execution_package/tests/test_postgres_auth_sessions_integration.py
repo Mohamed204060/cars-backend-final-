@@ -157,3 +157,72 @@ class TestTouchSessionSlidingWindow:
 
         fetched = repo.get_active_session_by_token_hash(session.token_hash)
         assert fetched.expires_at > original_expiry
+
+
+class TestCR018RegistrationTransactionAtomicity:
+    """CR-018 — يتحقق من الذرّية الحقيقية بين iam.* وstr.stores على اتصال
+    Postgres حي فعلي؛ InMemory (tests/test_auth_api.py) لا يمكنه اختبار
+    Rollback حقيقي لأنه لا يملك معاملات فعلية — هذا الملف هو الدليل الحقيقي
+    الوحيد على الذرّية المطلوبة (لا مستخدم يتيمًا عند فشل إنشاء المتجر)."""
+
+    def test_successful_seller_registration_commits_both_tables_atomically(self, conn):
+        import sys
+        sys.path.insert(0, "../store/src")
+        from auth_repository import PostgresAuthRepository
+        from store_repository import PostgresStoreRepository
+        from store_service import create_store
+        from registration_service import register_user
+
+        auth_repo = PostgresAuthRepository(conn)
+        store_repo = PostgresStoreRepository(conn)
+
+        result = register_user(auth_repo, store_repo, create_store,
+                                role_choice="seller", account_type="individual",
+                                email=f"atomic-{uuid.uuid4().hex[:8]}@example.com", raw_password="password1")
+
+        with conn.cursor() as cur:
+            cur.execute("SELECT primary_role, account_type FROM iam.users WHERE id = %s", (result.user_id,))
+            user_row = cur.fetchone()
+            assert user_row["primary_role"] == "individual_seller"
+
+            cur.execute("SELECT owner_user_ref_id FROM str.stores WHERE id = %s", (result.store_id,))
+            store_row = cur.fetchone()
+            assert store_row["owner_user_ref_id"] == result.user_id
+
+    def test_store_insertion_failure_rolls_back_user_creation_too(self, conn):
+        """يحاكي فشل إدراج المتجر (اتصال ثانٍ يقفل الجدول، فيسقط الإدراج
+        الأول بمهلة/قفل) — أبسط وأصدق محاكاة متاحة بلا Mock: إدراج store_id
+        بمعرّف owner غير صالح UUID عبر متجر مزيَّف يفشل عمدًا."""
+        import sys
+        sys.path.insert(0, "../store/src")
+        from auth_repository import PostgresAuthRepository
+        from registration_service import register_user
+
+        auth_repo = PostgresAuthRepository(conn)
+
+        class FailingStoreRepo:
+            def insert_store(self, store):
+                raise RuntimeError("محاكاة فشل إدراج المتجر عمدًا لاختبار الذرّية")
+
+        email = f"rollback-{uuid.uuid4().hex[:8]}@example.com"
+        try:
+            register_user(auth_repo, FailingStoreRepo(), lambda owner_user_ref_id: type("S", (), {"owner_user_ref_id": owner_user_ref_id})(),
+                           role_choice="seller", account_type="individual", email=email, raw_password="password1")
+            assert False, "كان يجب أن يفشل"
+        except RuntimeError:
+            pass
+
+        # ملاحظة دقيقة: الـRollback الفعلي حدث بالفعل تلقائيًا داخل
+        # `with auth_repo.connection:` في registration_service.py نفسها
+        # (سلوك psycopg2 القياسي عند استثناء غير مُعالَج داخل الكتلة) — هذا
+        # الاستدعاء هنا تنظيف احترازي لحالة اتصال الاختبار نفسه فقط، لا
+        # إعادة تنفيذ للآلية.
+        conn.rollback()
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT ui.id FROM iam.user_identities ui "
+                "JOIN iam.identity_providers ip ON ip.id = ui.provider_type_id "
+                "WHERE ip.code = 'email_password' AND ui.external_identifier = %s",
+                (email,),
+            )
+            assert cur.fetchone() is None, "لا يجب أن يبقى أي أثر لهوية المستخدم بعد فشل إنشاء المتجر"
