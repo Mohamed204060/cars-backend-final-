@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: منصة قطع غيار السيارات - Auto Parts Marketplace API
-  version: 1.14.0
+  version: 1.15.0
   description: 'مواصفة API تنفيذية، تغطي 15 عملية (Operations) عبر 14 مسارًا (Paths): الواجهات التمثيلية
     الخمس الأصلية الموثّقة بالتفصيل في التصميم التفصيلي (الحزمة 2)، بالإضافة إلى 5 عمليات خدمة Auth (اعتماد
     Contract Extension & Implementation Plan): تسجيل خروج، عرض/إضافة/إزالة وسائل الهوية، وعرض مزوّدي الهوية
@@ -1377,6 +1377,71 @@ components:
       - catalog_part_ref_id
       - condition_ref_id
       - pricing_mode
+    PurchaseRequestDisplayResponse:
+      type: object
+      description: 'CR-021: Read Model عرض فقط — منفصلة تمامًا عن PurchaseRequestResponse (لا تُستخدَم
+        في أي مسار كتابة/قبول/رفض/إلغاء). كل حقل اسم قد يكون null (غياب اسم محلَّي حقيقي، لا خطأ). عمدًا
+        بلا generation_name/trim_label/year — غير موجودة في نموذج البيانات الحالي إطلاقًا؛ لا تُقدَّم
+        هنا كحقول null تحسبًا لإيحائها باكتمال البيانات (راجع Vehicle Taxonomy Completeness Fact-Finding).'
+      properties:
+        id:
+          type: string
+          format: uuid
+        business_code:
+          type: string
+          nullable: true
+        status:
+          type: string
+          enum:
+          - open
+          - under_review
+          - fulfilled
+          - expired
+          - cancelled
+        created_at:
+          type: string
+          format: date-time
+        catalog_part_ref_id:
+          type: string
+          format: uuid
+        part_name:
+          type: string
+          nullable: true
+          description: من pct.localized_names (canonical)؛ null إن لم يوجد اسم مُدرَج.
+        trim_ref_id:
+          type: string
+          format: uuid
+        model_id:
+          type: string
+          format: uuid
+          nullable: true
+        model_name:
+          type: string
+          nullable: true
+          description: من vct.localized_names (owner_type='model').
+        manufacturer_id:
+          type: string
+          format: uuid
+          nullable: true
+        manufacturer_name:
+          type: string
+          nullable: true
+          description: من vct.localized_names (owner_type='manufacturer').
+      required:
+      - id
+      - status
+      - created_at
+      - catalog_part_ref_id
+      - trim_ref_id
+    PurchaseRequestDisplayListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/PurchaseRequestDisplayResponse'
+        pagination:
+          $ref: '#/components/schemas/PaginationMeta'
 paths:
   /api/v1/subscriptions/plans:
     post:
@@ -4762,3 +4827,39 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/purchase-requests/mine/display:
+    get:
+      operationId: listMyPurchaseRequestsDisplay
+      summary: طلبات الشراء الخاصة بالمستخدم — عرض مقروء بأسماء محلولة (Read Model)
+      description: 'CR-021: Endpoint منفصل تمامًا عن GET /purchase-requests/mine (بلا تعديل عليه إطلاقًا
+        — فُحصت استخداماته الحالية أولًا وقُرِّر Endpoint جديد بدل تغيير عقد قائم، أقل خطورة). يحلّ part_name
+        وmanufacturer_name وmodel_name عبر استعلام واحد مجمَّع (JOINs/LATERAL) — لا N+1، عددان ثابتان
+        من الاستعلامات (عدّ + بيانات) بغضّ النظر عن حجم النتيجة.'
+      x-traceability:
+        requirements: []
+        decisions:
+        - CR-021
+        x-gap-note: لا REQ سابق — Read Model عرض جديد موثَّق تحت CR-021 نفسها.
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: page
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          default: 1
+      - name: page_size
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          default: 20
+      responses:
+        '200':
+          description: طلبات الشراء الخاصة بالمستخدم مع أسماء محلولة
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurchaseRequestDisplayListResponse'
