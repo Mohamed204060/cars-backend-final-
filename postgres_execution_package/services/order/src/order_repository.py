@@ -9,8 +9,9 @@ order_repository.py — طبقة الوصول للبيانات لخدمة الط
 from abc import ABC, abstractmethod
 from typing import Optional, List
 import uuid
+from datetime import datetime, timedelta, timezone
 
-from order_service import PurchaseRequest, Offer
+from order_service import PurchaseRequest, PurchaseRequestDisplayView, Offer
 
 
 class OrderRepository(ABC):
@@ -52,6 +53,17 @@ class OrderRepository(ABC):
     @abstractmethod
     def list_purchase_requests_by_buyer(self, buyer_user_ref_id: str, status: Optional[str],
                                          page: int, page_size: int) -> "tuple[List[PurchaseRequest], int]":
+        raise NotImplementedError
+
+    @abstractmethod
+    def list_purchase_requests_display_for_buyer(self, buyer_user_ref_id: str, page: int,
+                                                  page_size: int) -> "tuple[list, int]":
+        """
+        CR-021: Read Model منفصل تمامًا — لا تعديل على list_purchase_requests_by_buyer
+        أعلاه ولا على PurchaseRequestResponse. استعلام واحد مجمَّع (JOINs)
+        + استعلام عدّ واحد = عددان ثابتان بغضّ النظر عن N (لا N+1). يُعيد
+        كائنات PurchaseRequestDisplayView (منفصلة عن PurchaseRequest).
+        """
         raise NotImplementedError
 
     @abstractmethod
@@ -192,6 +204,67 @@ class PostgresOrderRepository(OrderRepository):
                                   status=r["status"], business_code=r["business_code"]) for r in rows]
         return items, total
 
+    def list_purchase_requests_display_for_buyer(self, buyer_user_ref_id: str, page: int, page_size: int):
+        """
+        CR-021: استعلامان ثابتان فقط (عدّ + بيانات)، بغضّ النظر عن N —
+        لا N+1. LATERAL بدل JOIN عادي لأسماء VCT/PCT المحلَّية عمدًا:
+        عمود locale حر بلا اصطلاح محسوم بعد (راجع Vehicle Taxonomy
+        Fact-Finding)، فقد يوجد أكثر من صف اسم لنفس الكيان — LATERAL
+        يضمن صفًا واحدًا فقط فيُمنَع تكرار نفس طلب الشراء في النتيجة
+        (سياسة اختيار مؤقتة موثَّقة: تفضيل الصف بلا locale ثم الأقدم
+        بالمعرّف؛ قرار نهائي بانتظار قرار نموذج البيانات).
+        """
+        offset = (page - 1) * page_size
+        params = {"buyer_id": buyer_user_ref_id, "limit": page_size, "offset": offset}
+        with self._connection.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) AS total FROM pur.purchase_requests WHERE buyer_user_ref_id = %(buyer_id)s",
+                params,
+            )
+            total = cur.fetchone()["total"]
+            cur.execute(
+                """
+                SELECT
+                    pr.id, pr.business_code, pr.status, pr.created_at,
+                    pr.catalog_part_ref_id, pl.name_value AS part_name,
+                    pr.trim_ref_id,
+                    mo.id AS model_id, moln.name_value AS model_name,
+                    man.id AS manufacturer_id, manln.name_value AS manufacturer_name
+                FROM pur.purchase_requests pr
+                LEFT JOIN pct.localized_names pl
+                    ON pl.catalog_part_id = pr.catalog_part_ref_id AND pl.name_kind = 'canonical'
+                LEFT JOIN vct.trims tr ON tr.id = pr.trim_ref_id
+                LEFT JOIN vct.generations gen ON gen.id = tr.generation_id
+                LEFT JOIN vct.models mo ON mo.id = gen.model_id
+                LEFT JOIN LATERAL (
+                    SELECT name_value FROM vct.localized_names
+                    WHERE owner_ref_id = mo.id AND owner_type = 'model'
+                    ORDER BY locale NULLS FIRST, id LIMIT 1
+                ) moln ON true
+                LEFT JOIN vct.manufacturers man ON man.id = mo.manufacturer_id
+                LEFT JOIN LATERAL (
+                    SELECT name_value FROM vct.localized_names
+                    WHERE owner_ref_id = man.id AND owner_type = 'manufacturer'
+                    ORDER BY locale NULLS FIRST, id LIMIT 1
+                ) manln ON true
+                WHERE pr.buyer_user_ref_id = %(buyer_id)s
+                ORDER BY pr.created_at DESC
+                LIMIT %(limit)s OFFSET %(offset)s
+                """,
+                params,
+            )
+            rows = cur.fetchall()
+        items = [
+            PurchaseRequestDisplayView(
+                id=r["id"], business_code=r["business_code"], status=r["status"], created_at=r["created_at"],
+                catalog_part_ref_id=r["catalog_part_ref_id"], part_name=r["part_name"],
+                trim_ref_id=r["trim_ref_id"], model_id=r["model_id"], model_name=r["model_name"],
+                manufacturer_id=r["manufacturer_id"], manufacturer_name=r["manufacturer_name"],
+            )
+            for r in rows
+        ]
+        return items, total
+
     def list_offers_for_purchase_request_paginated(self, pr_id: str, status: Optional[str],
                                                      page: int, page_size: int,
                                                      seller_store_ref_id: Optional[str] = None):
@@ -225,13 +298,33 @@ class InMemoryOrderRepository(OrderRepository):
     def __init__(self):
         self._prs = {}
         self._offers = {}
+        # CR-021: PurchaseRequest لا يحمل created_at إطلاقًا (لا عمود في
+        # الـdataclass الأصلي) — ساعة صناعية تُعيد datetime حقيقيًا (لا int)،
+        # نفس درس CR-015/رسائل: لا يجوز تمرير عدّاد صحيح مكان datetime.
+        self._clock_base = datetime(2020, 1, 1, tzinfo=timezone.utc)
+        self._clock_ticks = 0
+        self._part_names = {}
+        # trim_ref_id -> (model_id, model_name, manufacturer_id, manufacturer_name)
+        self._trim_vehicle_info = {}
+        self._pr_created_at = {}
         self._seq = {"pr": 1, "offer": 1}
+
+    def _next_tick(self):
+        self._clock_ticks += 1
+        return self._clock_base + timedelta(seconds=self._clock_ticks)
+
+    def set_part_name(self, catalog_part_ref_id, name):
+        self._part_names[catalog_part_ref_id] = name
+
+    def set_trim_vehicle_info(self, trim_ref_id, model_id, model_name, manufacturer_id, manufacturer_name):
+        self._trim_vehicle_info[trim_ref_id] = (model_id, model_name, manufacturer_id, manufacturer_name)
 
     def insert_purchase_request(self, pr: PurchaseRequest) -> PurchaseRequest:
         pr.id = f"pr-{self._seq['pr']}"
         pr.business_code = f"PR-{uuid.uuid4().hex[:29]}"
         self._seq["pr"] += 1
         self._prs[pr.id] = pr
+        self._pr_created_at[pr.id] = self._next_tick()  # CR-021: لا عمود created_at على PurchaseRequest نفسها
         return pr
 
     def get_purchase_request_by_id(self, pr_id: str) -> Optional[PurchaseRequest]:
@@ -271,6 +364,28 @@ class InMemoryOrderRepository(OrderRepository):
         total = len(items)
         start = (page - 1) * page_size
         return items[start:start + page_size], total
+
+    def list_purchase_requests_display_for_buyer(self, buyer_user_ref_id: str, page: int, page_size: int):
+        prs = [pr for pr in self._prs.values() if pr.buyer_user_ref_id == buyer_user_ref_id]
+        prs.sort(key=lambda pr: self._pr_created_at.get(pr.id, self._clock_base), reverse=True)
+        total = len(prs)
+        start = (page - 1) * page_size
+        page_prs = prs[start:start + page_size]
+
+        items = []
+        for pr in page_prs:
+            model_id = model_name = manufacturer_id = manufacturer_name = None
+            if pr.trim_ref_id in self._trim_vehicle_info:
+                model_id, model_name, manufacturer_id, manufacturer_name = self._trim_vehicle_info[pr.trim_ref_id]
+            items.append(PurchaseRequestDisplayView(
+                id=pr.id, business_code=pr.business_code, status=pr.status,
+                created_at=self._pr_created_at.get(pr.id, self._clock_base),
+                catalog_part_ref_id=pr.catalog_part_ref_id,
+                part_name=self._part_names.get(pr.catalog_part_ref_id),
+                trim_ref_id=pr.trim_ref_id, model_id=model_id, model_name=model_name,
+                manufacturer_id=manufacturer_id, manufacturer_name=manufacturer_name,
+            ))
+        return items, total
 
     def list_offers_for_purchase_request_paginated(self, pr_id: str, status: Optional[str],
                                                      page: int, page_size: int,

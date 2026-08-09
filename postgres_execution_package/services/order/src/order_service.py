@@ -12,6 +12,7 @@ SSOT: يشير الطلب لقطعة الكتالوج وفئة السيارة ب
 """
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Optional, List
 
 
@@ -19,6 +20,31 @@ PR_VALID_STATUSES = {"open", "under_review", "fulfilled", "expired", "cancelled"
 PR_CLOSED_STATUSES = {"fulfilled", "expired", "cancelled"}  # REQ-PUR-017: لا عروض جديدة بعدها
 
 OFFER_VALID_STATUSES = {"submitted", "accepted", "rejected", "withdrawn", "expired"}
+
+
+@dataclass
+class PurchaseRequestDisplayView:
+    """
+    CR-021: Read Model منفصل تمامًا عن PurchaseRequest أعلاه — لا كيان أصيل
+    (نفس مبدأ InventoryItemPublicDetailView من CR-019). كل حقل اسم Optional
+    (LEFT JOIN، غياب اسم محلَّي = None صريح، لا خطأ ولا قيمة مختلَقة).
+
+    عمدًا بلا generation_name/trim_label/year: لا وجود لها في نموذج
+    البيانات الحالي إطلاقًا (لا عمود، لا مكان تخزين) — إضافتها كحقول null
+    هنا كانت ستُوحي باستعداد Schema لم يُقرَّر بعد؛ تُترَك للتقرير المستقل
+    (Vehicle Taxonomy Completeness) وقرار لاحق.
+    """
+    id: str
+    business_code: Optional[str]
+    status: str
+    created_at: datetime
+    catalog_part_ref_id: str
+    part_name: Optional[str]
+    trim_ref_id: str
+    model_id: Optional[str]
+    model_name: Optional[str]
+    manufacturer_id: Optional[str]
+    manufacturer_name: Optional[str]
 
 
 @dataclass
@@ -280,6 +306,12 @@ def cancel_purchase_request_via_repository(repository, pr_id: str) -> PurchaseRe
 def list_my_purchase_requests_via_repository(repository, buyer_user_ref_id: str,
                                               status: Optional[str], page: int, page_size: int):
     return repository.list_purchase_requests_by_buyer(buyer_user_ref_id, status, page, page_size)
+
+
+def list_my_purchase_requests_display_via_repository(repository, buyer_user_ref_id: str,
+                                                       page: int, page_size: int):
+    """CR-021: طبقة تنسيق رقيقة فقط — كل منطق الحلّ (JOINs) في Repository."""
+    return repository.list_purchase_requests_display_for_buyer(buyer_user_ref_id, page, page_size)
 
 
 def list_purchase_request_offers_via_repository(repository, pr_id: str, requester_user_ref_id: str,

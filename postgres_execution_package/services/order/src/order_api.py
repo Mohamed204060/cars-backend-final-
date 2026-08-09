@@ -25,6 +25,7 @@ from order_service import (
     cancel_purchase_request_via_repository,
     create_purchase_request_via_repository,
     list_my_purchase_requests_via_repository,
+    list_my_purchase_requests_display_via_repository,
     list_purchase_request_offers_via_repository,
     submit_offer_via_repository,
     withdraw_offer_via_repository,
@@ -55,6 +56,31 @@ class PaginationMeta(BaseModel):
 
 class PurchaseRequestListResponse(BaseModel):
     items: list[PurchaseRequestResponse]
+    pagination: PaginationMeta
+
+
+class PurchaseRequestDisplayResponse(BaseModel):
+    """
+    CR-021: Read Model عرض فقط — منفصلة تمامًا عن PurchaseRequestResponse
+    (لا حقول كتابة، لا استخدام في أي مسار قبول/رفض/إلغاء). كل حقل اسم
+    Optional (غياب توطين = None صريح). عمدًا بلا generation_name/trim_label/
+    year — غير موجودة في نموذج البيانات، لا تُقدَّم كـnull إيحاءً باكتمالها.
+    """
+    id: str
+    business_code: Optional[str] = None
+    status: str
+    created_at: str
+    catalog_part_ref_id: str
+    part_name: Optional[str] = None
+    trim_ref_id: str
+    model_id: Optional[str] = None
+    model_name: Optional[str] = None
+    manufacturer_id: Optional[str] = None
+    manufacturer_name: Optional[str] = None
+
+
+class PurchaseRequestDisplayListResponse(BaseModel):
+    items: list[PurchaseRequestDisplayResponse]
     pagination: PaginationMeta
 
 
@@ -141,6 +167,40 @@ def list_my_purchase_requests(
     )
     return PurchaseRequestListResponse(
         items=[_pr_response(pr) for pr in items],
+        pagination=PaginationMeta(page=page, page_size=page_size, total_items=total),
+    )
+
+
+@router.get("/purchase-requests/mine/display", response_model=PurchaseRequestDisplayListResponse)
+def list_my_purchase_requests_display(
+    correlation_id: str = Depends(get_correlation_id),
+    current_session: Session = Depends(get_current_session),
+    order_repo=Depends(get_order_repository),
+    page: int = 1,
+    page_size: int = 20,
+):
+    """
+    CR-021 — Read Model منفصل تمامًا عن GET /purchase-requests/mine (بلا
+    تعديل عليه إطلاقًا؛ فُحصت استخداماته الحالية أولًا وقُرِّر Endpoint
+    جديد بدل تغيير عقد قائم، أقل خطورة). يعيد أسماء القطعة/الموديل/الشركة
+    المصنِّعة الحقيقية عبر استعلام واحد مجمَّع — لا generation_name ولا
+    trim_label ولا year (غير موجودة في نموذج البيانات، بانتظار قرار
+    Vehicle Taxonomy منفصل؛ لا تُقدَّم هنا كحقول null إيحاءً باكتمالها).
+    """
+    items, total = list_my_purchase_requests_display_via_repository(
+        order_repo, buyer_user_ref_id=current_session.user_id, page=page, page_size=page_size,
+    )
+    return PurchaseRequestDisplayListResponse(
+        items=[
+            PurchaseRequestDisplayResponse(
+                id=i.id, business_code=i.business_code, status=i.status,
+                created_at=i.created_at.isoformat(),
+                catalog_part_ref_id=i.catalog_part_ref_id, part_name=i.part_name,
+                trim_ref_id=i.trim_ref_id, model_id=i.model_id, model_name=i.model_name,
+                manufacturer_id=i.manufacturer_id, manufacturer_name=i.manufacturer_name,
+            )
+            for i in items
+        ],
         pagination=PaginationMeta(page=page, page_size=page_size, total_items=total),
     )
 
