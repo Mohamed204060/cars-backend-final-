@@ -282,3 +282,83 @@ class TestWithdrawOffer:
         assert resp.json()["status"] == "withdrawn"
 
 
+
+
+class TestCR021PurchaseRequestDisplayProjection:
+    """CR-021 — Read Model منفصل، GET /purchase-requests/mine/display."""
+
+    def test_part_name_manufacturer_model_resolved(self, app_and_client):
+        app, client = app_and_client
+        part_id = _make_approved_part(app, client)
+        _login_as(app, client, "buyer-cr021-1@example.com")
+
+        app.state.order_repository.set_part_name(part_id, "طرمبة بنزين")
+        app.state.order_repository.set_trim_vehicle_info(
+            "trim-1", "model-1", "كامري", "mfr-1", "تويوتا",
+        )
+        client.post("/api/v1/purchase-requests", json={"catalog_part_ref_id": part_id, "trim_ref_id": "trim-1"})
+
+        resp = client.get("/api/v1/purchase-requests/mine/display")
+        assert resp.status_code == 200
+        item = resp.json()["items"][0]
+        assert item["part_name"] == "طرمبة بنزين"
+        assert item["manufacturer_name"] == "تويوتا"
+        assert item["model_name"] == "كامري"
+
+    def test_created_at_present_and_valid(self, app_and_client):
+        app, client = app_and_client
+        part_id = _make_approved_part(app, client)
+        _login_as(app, client, "buyer-cr021-2@example.com")
+        client.post("/api/v1/purchase-requests", json={"catalog_part_ref_id": part_id, "trim_ref_id": "trim-x"})
+
+        item = client.get("/api/v1/purchase-requests/mine/display").json()["items"][0]
+        assert item["created_at"]  # ISO string غير فارغ
+
+    def test_scoping_excludes_other_buyers_requests(self, app_and_client):
+        app, client = app_and_client
+        part_id = _make_approved_part(app, client)
+        _login_as(app, client, "buyer-cr021-3a@example.com")
+        client.post("/api/v1/purchase-requests", json={"catalog_part_ref_id": part_id, "trim_ref_id": "trim-x"})
+        client.post("/api/v1/auth/logout")
+
+        _login_as(app, client, "buyer-cr021-3b@example.com")
+        resp = client.get("/api/v1/purchase-requests/mine/display")
+        assert resp.json()["pagination"]["total_items"] == 0
+
+    def test_missing_localized_names_resolve_to_null_not_error(self, app_and_client):
+        app, client = app_and_client
+        part_id = _make_approved_part(app, client)
+        _login_as(app, client, "buyer-cr021-4@example.com")
+        # لا set_part_name/set_trim_vehicle_info هنا عمدًا — يحاكي غياب توطين حقيقي
+        client.post("/api/v1/purchase-requests", json={"catalog_part_ref_id": part_id, "trim_ref_id": "trim-unknown"})
+
+        resp = client.get("/api/v1/purchase-requests/mine/display")
+        assert resp.status_code == 200
+        item = resp.json()["items"][0]
+        assert item["part_name"] is None
+        assert item["manufacturer_name"] is None
+        assert item["model_name"] is None
+
+    def test_original_mine_endpoint_unchanged(self, app_and_client):
+        """يثبت أن GET /purchase-requests/mine الأساسي لم يتأثر إطلاقًا."""
+        app, client = app_and_client
+        part_id = _make_approved_part(app, client)
+        _login_as(app, client, "buyer-cr021-5@example.com")
+        client.post("/api/v1/purchase-requests", json={"catalog_part_ref_id": part_id, "trim_ref_id": "trim-x"})
+
+        resp = client.get("/api/v1/purchase-requests/mine")
+        assert resp.status_code == 200
+        item = resp.json()["items"][0]
+        assert "part_name" not in item
+        assert "manufacturer_name" not in item
+        assert set(item.keys()) == {"id", "business_code", "buyer_user_ref_id", "catalog_part_ref_id", "trim_ref_id", "status"}
+
+    def test_no_internal_or_other_user_data_leak(self, app_and_client):
+        app, client = app_and_client
+        part_id = _make_approved_part(app, client)
+        _login_as(app, client, "buyer-cr021-6@example.com")
+        client.post("/api/v1/purchase-requests", json={"catalog_part_ref_id": part_id, "trim_ref_id": "trim-x"})
+
+        body_text = client.get("/api/v1/purchase-requests/mine/display").text
+        assert "buyer_user_ref_id" not in body_text
+        assert "password" not in body_text.lower()

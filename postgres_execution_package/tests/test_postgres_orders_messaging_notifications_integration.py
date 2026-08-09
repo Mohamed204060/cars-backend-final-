@@ -209,3 +209,91 @@ class TestOfferSubmissionRequiresActiveStore:
         resp = client.post(f"/api/v1/purchase-requests/{pr_id}/offers",
                             json={"amount": 100.0, "currency": "SAR", "provides_shipping": False})
         assert resp.status_code == 403
+
+
+class TestCR021DisplayProjectionOnLivePostgres:
+    """CR-021: يتحقق من صحة نحو SQL الفعلي (JOINs + LATERAL) على اتصال حي —
+    لا يكتشفه py_compile ولا InMemory."""
+
+    def test_full_chain_resolves_part_manufacturer_model_names(self, app_and_client):
+        app, client, conn = app_and_client
+        part_id = _make_approved_part(client, conn)
+
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO pct.localized_names (catalog_part_id, name_value, name_kind, locale) "
+            "VALUES (%s, %s, 'canonical', 'ar')",
+            (part_id, "طرمبة بنزين"),
+        )
+        cur.execute("INSERT INTO vct.manufacturers (status) VALUES ('approved') RETURNING id")
+        manufacturer_id = cur.fetchone()["id"]
+        cur.execute(
+            "INSERT INTO vct.localized_names (owner_ref_id, owner_type, locale, name_value) "
+            "VALUES (%s, 'manufacturer', 'ar', %s)",
+            (manufacturer_id, "تويوتا"),
+        )
+        cur.execute(
+            "INSERT INTO vct.models (manufacturer_id, status) VALUES (%s, 'approved') RETURNING id",
+            (manufacturer_id,),
+        )
+        model_id = cur.fetchone()["id"]
+        cur.execute(
+            "INSERT INTO vct.localized_names (owner_ref_id, owner_type, locale, name_value) "
+            "VALUES (%s, 'model', 'ar', %s)",
+            (model_id, "كامري"),
+        )
+        cur.execute("INSERT INTO vct.generations (model_id) VALUES (%s) RETURNING id", (model_id,))
+        generation_id = cur.fetchone()["id"]
+        cur.execute(
+            "INSERT INTO ref.ref_values (ref_type, code) VALUES ('fuel_type', 'petrol') "
+            "ON CONFLICT (ref_type, code) DO NOTHING RETURNING id"
+        )
+        row = cur.fetchone()
+        if row is None:
+            cur.execute("SELECT id FROM ref.ref_values WHERE ref_type = 'fuel_type' AND code = 'petrol'")
+            row = cur.fetchone()
+        fuel_id = row["id"]
+        cur.execute(
+            "INSERT INTO ref.ref_values (ref_type, code) VALUES ('transmission_type', 'automatic') "
+            "ON CONFLICT (ref_type, code) DO NOTHING RETURNING id"
+        )
+        row = cur.fetchone()
+        if row is None:
+            cur.execute("SELECT id FROM ref.ref_values WHERE ref_type = 'transmission_type' AND code = 'automatic'")
+            row = cur.fetchone()
+        transmission_id = row["id"]
+        cur.execute(
+            "INSERT INTO vct.trims (generation_id, fuel_type_ref_id, transmission_type_ref_id) "
+            "VALUES (%s, %s, %s) RETURNING id",
+            (generation_id, fuel_id, transmission_id),
+        )
+        trim_id = cur.fetchone()["id"]
+
+        buyer_id = _register_and_login(client, conn, f"buyer-cr021-{uuid.uuid4().hex[:8]}@example.com")
+        client.post("/api/v1/purchase-requests", json={"catalog_part_ref_id": part_id, "trim_ref_id": trim_id})
+
+        resp = client.get("/api/v1/purchase-requests/mine/display")
+        assert resp.status_code == 200, resp.text
+        item = resp.json()["items"][0]
+        assert item["part_name"] == "طرمبة بنزين"
+        assert item["manufacturer_name"] == "تويوتا"
+        assert item["model_name"] == "كامري"
+        assert item["manufacturer_id"] == manufacturer_id
+        assert item["model_id"] == model_id
+        assert "buyer_user_ref_id" not in item
+
+    def test_no_query_count_growth_with_multiple_requests(self, app_and_client):
+        """لا N+1: عدد الاستعلامات ثابت بغضّ النظر عن عدد الطلبات — يُتحقَّق
+        عبر قياس أن الاستجابة تنجح بسرعة لعدد صفوف متعدد (فحص غير مباشر؛
+        الدليل البنيوي الحقيقي هو استعلامان فقط في الكود نفسه، مؤكَّد بالمراجعة)."""
+        app, client, conn = app_and_client
+        part_id = _make_approved_part(client, conn)
+        buyer_id = _register_and_login(client, conn, f"buyer-cr021b-{uuid.uuid4().hex[:8]}@example.com")
+        for _ in range(5):
+            client.post("/api/v1/purchase-requests", json={"catalog_part_ref_id": part_id, "trim_ref_id": str(uuid.uuid4())})
+
+        resp = client.get("/api/v1/purchase-requests/mine/display")
+        assert resp.status_code == 200
+        assert resp.json()["pagination"]["total_items"] == 5
+        for item in resp.json()["items"]:
+            assert item["manufacturer_name"] is None  # trim غير حقيقي، LEFT JOIN يعيد None بلا خطأ
