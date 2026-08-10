@@ -16,6 +16,8 @@ from pct_api import router as pct_router
 from pct_repository import InMemoryPctRepository
 from order_api import router as order_router
 from order_repository import InMemoryOrderRepository
+from ref_repository import InMemoryRefRepository
+from ref_service import RefValue
 
 
 @pytest.fixture
@@ -32,9 +34,17 @@ def app_and_client():
     app.state.store_repository = InMemoryStoreRepository()
     app.state.pct_repository = InMemoryPctRepository()
     app.state.order_repository = InMemoryOrderRepository()
+    app.state.ref_repository = InMemoryRefRepository()
 
     client = TestClient(app, base_url="https://testserver")
     return app, client
+
+
+def _make_ref_value(app, ref_type: str, code: str, status: str = "active") -> str:
+    """CR-022: يُدرِج قيمة مرجعية مباشرة في المستودع الوهمي (لا Endpoint إنشاء متاح هنا خارج نطاق CR-022)."""
+    repo = app.state.ref_repository
+    value = repo.insert_value(RefValue(id="", ref_type=ref_type, code=code, status=status))
+    return value.id
 
 
 def _login_as(app, client, email: str, role: str = "individual_buyer") -> str:
@@ -340,7 +350,15 @@ class TestCR021PurchaseRequestDisplayProjection:
         assert item["model_name"] is None
 
     def test_original_mine_endpoint_unchanged(self, app_and_client):
-        """يثبت أن GET /purchase-requests/mine الأساسي لم يتأثر إطلاقًا."""
+        """
+        يثبت أن GET /purchase-requests/mine الأساسي لم يتأثر بـRead Model
+        CR-021 (part_name/manufacturer_name تبقى غائبة، هذا العقد بلا JOINs).
+        تحديث CR-022 (2026-08): مجموعة المفاتيح المتوقَّعة توسَّعت إضافيًا
+        بحقلي condition_ref_id/notes — نفس PurchaseRequestResponse يُستخدَم
+        فعليًا لكل مسارات PR (إنشاء/عرض/قائمة)، وهذان عمودان حقيقيان في
+        الجدول (لا Read Model منفصل كحالة CR-021)؛ إضافة حقلين Nullable لا
+        تكسر أي مستهلك حالي (توافق خلفي قياسي لإضافات JSON).
+        """
         app, client = app_and_client
         part_id = _make_approved_part(app, client)
         _login_as(app, client, "buyer-cr021-5@example.com")
@@ -351,7 +369,12 @@ class TestCR021PurchaseRequestDisplayProjection:
         item = resp.json()["items"][0]
         assert "part_name" not in item
         assert "manufacturer_name" not in item
-        assert set(item.keys()) == {"id", "business_code", "buyer_user_ref_id", "catalog_part_ref_id", "trim_ref_id", "status"}
+        assert set(item.keys()) == {
+            "id", "business_code", "buyer_user_ref_id", "catalog_part_ref_id", "trim_ref_id", "status",
+            "condition_ref_id", "notes",
+        }
+        assert item["condition_ref_id"] is None
+        assert item["notes"] is None
 
     def test_no_internal_or_other_user_data_leak(self, app_and_client):
         app, client = app_and_client
@@ -362,3 +385,121 @@ class TestCR021PurchaseRequestDisplayProjection:
         body_text = client.get("/api/v1/purchase-requests/mine/display").text
         assert "buyer_user_ref_id" not in body_text
         assert "password" not in body_text.lower()
+
+
+class TestCR022PurchaseRequestConditionAndNotes:
+    """CR-022 — Purchase Request Condition & Buyer Notes (النطاق المعتمَد حرفيًا فقط)."""
+
+    def test_condition_ref_id_null_accepted_as_no_preference(self, app_and_client):
+        app, client = app_and_client
+        part_id = _make_approved_part(app, client)
+        _login_as(app, client, "buyer-cr022-1@example.com")
+
+        resp = client.post("/api/v1/purchase-requests",
+                            json={"catalog_part_ref_id": part_id, "trim_ref_id": "trim-1"})
+        assert resp.status_code == 201
+        body = resp.json()
+        assert body["condition_ref_id"] is None
+        assert body["notes"] is None
+
+    def test_valid_part_condition_ref_id_accepted(self, app_and_client):
+        app, client = app_and_client
+        part_id = _make_approved_part(app, client)
+        condition_id = _make_ref_value(app, "part_condition", "new")
+        _login_as(app, client, "buyer-cr022-2@example.com")
+
+        resp = client.post("/api/v1/purchase-requests", json={
+            "catalog_part_ref_id": part_id, "trim_ref_id": "trim-1", "condition_ref_id": condition_id,
+        })
+        assert resp.status_code == 201
+        assert resp.json()["condition_ref_id"] == condition_id
+
+    def test_ref_id_from_other_ref_type_rejected(self, app_and_client):
+        """لا يكفي وجود UUID من نوع مرجعي آخر (مثال: fuel_type)."""
+        app, client = app_and_client
+        part_id = _make_approved_part(app, client)
+        wrong_type_id = _make_ref_value(app, "fuel_type", "petrol")
+        _login_as(app, client, "buyer-cr022-3@example.com")
+
+        resp = client.post("/api/v1/purchase-requests", json={
+            "catalog_part_ref_id": part_id, "trim_ref_id": "trim-1", "condition_ref_id": wrong_type_id,
+        })
+        assert resp.status_code == 400
+        assert resp.json()["detail"]["error_code"] == "INVALID_CONDITION_REF"
+
+    def test_nonexistent_condition_ref_id_rejected(self, app_and_client):
+        app, client = app_and_client
+        part_id = _make_approved_part(app, client)
+        _login_as(app, client, "buyer-cr022-4@example.com")
+
+        resp = client.post("/api/v1/purchase-requests", json={
+            "catalog_part_ref_id": part_id, "trim_ref_id": "trim-1", "condition_ref_id": str(__import__("uuid").uuid4()),
+        })
+        assert resp.status_code == 400
+        assert resp.json()["detail"]["error_code"] == "INVALID_CONDITION_REF"
+
+    def test_archived_condition_ref_id_rejected(self, app_and_client):
+        """status='active' هو نفس دلالة 'قابل للاستخدام' المعتمَدة أصلًا (get_values_for_type)."""
+        app, client = app_and_client
+        part_id = _make_approved_part(app, client)
+        archived_id = _make_ref_value(app, "part_condition", "obsolete", status="archived")
+        _login_as(app, client, "buyer-cr022-5@example.com")
+
+        resp = client.post("/api/v1/purchase-requests", json={
+            "catalog_part_ref_id": part_id, "trim_ref_id": "trim-1", "condition_ref_id": archived_id,
+        })
+        assert resp.status_code == 400
+        assert resp.json()["detail"]["error_code"] == "INVALID_CONDITION_REF"
+
+    def test_notes_absent_accepted(self, app_and_client):
+        app, client = app_and_client
+        part_id = _make_approved_part(app, client)
+        _login_as(app, client, "buyer-cr022-6@example.com")
+
+        resp = client.post("/api/v1/purchase-requests",
+                            json={"catalog_part_ref_id": part_id, "trim_ref_id": "trim-1"})
+        assert resp.status_code == 201
+        assert resp.json()["notes"] is None
+
+    def test_notes_at_exactly_2000_chars_accepted(self, app_and_client):
+        app, client = app_and_client
+        part_id = _make_approved_part(app, client)
+        _login_as(app, client, "buyer-cr022-7@example.com")
+        notes = "أ" * 2000
+
+        resp = client.post("/api/v1/purchase-requests",
+                            json={"catalog_part_ref_id": part_id, "trim_ref_id": "trim-1", "notes": notes})
+        assert resp.status_code == 201
+        assert resp.json()["notes"] == notes
+        assert len(resp.json()["notes"]) == 2000
+
+    def test_notes_over_2000_chars_rejected(self, app_and_client):
+        app, client = app_and_client
+        part_id = _make_approved_part(app, client)
+        _login_as(app, client, "buyer-cr022-8@example.com")
+        notes = "أ" * 2001
+
+        resp = client.post("/api/v1/purchase-requests",
+                            json={"catalog_part_ref_id": part_id, "trim_ref_id": "trim-1", "notes": notes})
+        # يُرفَض عند طبقة تحقق Pydantic (max_length) قبل الوصول لطبقة الخدمة
+        assert resp.status_code == 422
+
+    def test_condition_and_notes_visible_on_mine_list_round_trip(self, app_and_client):
+        """
+        القيمتان تُخزَّنان وتُعادان فعليًا على GET /purchase-requests/mine
+        (نفس PurchaseRequestResponse)، لا فقط على استجابة الإنشاء المباشرة.
+        """
+        app, client = app_and_client
+        part_id = _make_approved_part(app, client)
+        condition_id = _make_ref_value(app, "part_condition", "used")
+        _login_as(app, client, "buyer-cr022-9@example.com")
+        client.post("/api/v1/purchase-requests", json={
+            "catalog_part_ref_id": part_id, "trim_ref_id": "trim-1",
+            "condition_ref_id": condition_id, "notes": "ملاحظة",
+        })
+
+        resp = client.get("/api/v1/purchase-requests/mine")
+        assert resp.status_code == 200
+        item = resp.json()["items"][0]
+        assert item["condition_ref_id"] == condition_id
+        assert item["notes"] == "ملاحظة"

@@ -35,6 +35,7 @@ from ntf_api import router as ntf_router
 from ntf_repository import PostgresNtfRepository
 from ntf_service import NotificationCenterEntry
 from credential_service import hash_password
+from ref_repository import PostgresRefRepository
 
 
 DATABASE_URL = os.environ.get("TEST_DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/carparts_test")
@@ -67,6 +68,7 @@ def app_and_client(conn):
     app.state.message_repository = PostgresMessageRepository(conn)
     app.state.message_extended_repository = PostgresMessageExtendedRepository(conn)
     app.state.ntf_repository = PostgresNtfRepository(conn)
+    app.state.ref_repository = PostgresRefRepository(conn)
     client = TestClient(app, base_url="https://testserver")
     return app, client, conn
 
@@ -297,3 +299,87 @@ class TestCR021DisplayProjectionOnLivePostgres:
         assert resp.json()["pagination"]["total_items"] == 5
         for item in resp.json()["items"]:
             assert item["manufacturer_name"] is None  # trim غير حقيقي، LEFT JOIN يعيد None بلا خطأ
+
+
+class TestCR022ConditionAndNotesOnLivePostgres:
+    """
+    CR-022: يتحقق من صحة عمودَي condition_ref_id/notes الجديدين (Migration
+    028) وقيد التحقق الحقيقي على النوع المرجعي (part_condition) على اتصال
+    PostgreSQL حي — لا يكتشفه py_compile ولا InMemory.
+    """
+
+    def _insert_ref_value(self, conn, ref_type: str, code: str, status: str = "active") -> str:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO ref.ref_values (ref_type, code, status) VALUES (%s, %s, %s) RETURNING id",
+            (ref_type, code, status),
+        )
+        return cur.fetchone()["id"]
+
+    def test_full_round_trip_persists_and_returns_both_fields(self, app_and_client):
+        app, client, conn = app_and_client
+        part_id = _make_approved_part(client, conn)
+        condition_id = self._insert_ref_value(conn, "part_condition", f"new-{uuid.uuid4().hex[:8]}")
+        _register_and_login(client, conn, f"buyer-cr022a-{uuid.uuid4().hex[:8]}@example.com")
+
+        resp = client.post("/api/v1/purchase-requests", json={
+            "catalog_part_ref_id": part_id, "trim_ref_id": str(uuid.uuid4()),
+            "condition_ref_id": condition_id, "notes": "بحاجة لقطعة أصلية فقط، يفضَّل الشحن السريع.",
+        })
+        assert resp.status_code == 201, resp.text
+        body = resp.json()
+        assert body["condition_ref_id"] == condition_id
+        assert body["notes"] == "بحاجة لقطعة أصلية فقط، يفضَّل الشحن السريع."
+
+        # قراءة مستقلة عن نفس الصف مباشرة من القاعدة، للتأكد من الحفظ الفعلي لا الاستجابة فقط
+        cur = conn.cursor()
+        cur.execute("SELECT condition_ref_id, notes FROM pur.purchase_requests WHERE id = %s", (body["id"],))
+        row = cur.fetchone()
+        assert row["condition_ref_id"] == condition_id
+        assert row["notes"] == "بحاجة لقطعة أصلية فقط، يفضَّل الشحن السريع."
+
+    def test_condition_ref_id_from_wrong_ref_type_rejected_on_live_postgres(self, app_and_client):
+        app, client, conn = app_and_client
+        part_id = _make_approved_part(client, conn)
+        wrong_type_id = self._insert_ref_value(conn, "fuel_type", f"petrol-{uuid.uuid4().hex[:8]}")
+        _register_and_login(client, conn, f"buyer-cr022b-{uuid.uuid4().hex[:8]}@example.com")
+
+        resp = client.post("/api/v1/purchase-requests", json={
+            "catalog_part_ref_id": part_id, "trim_ref_id": str(uuid.uuid4()), "condition_ref_id": wrong_type_id,
+        })
+        assert resp.status_code == 400
+        assert resp.json()["detail"]["error_code"] == "INVALID_CONDITION_REF"
+
+    def test_archived_condition_ref_id_rejected_on_live_postgres(self, app_and_client):
+        app, client, conn = app_and_client
+        part_id = _make_approved_part(client, conn)
+        archived_id = self._insert_ref_value(conn, "part_condition", f"obsolete-{uuid.uuid4().hex[:8]}", status="archived")
+        _register_and_login(client, conn, f"buyer-cr022c-{uuid.uuid4().hex[:8]}@example.com")
+
+        resp = client.post("/api/v1/purchase-requests", json={
+            "catalog_part_ref_id": part_id, "trim_ref_id": str(uuid.uuid4()), "condition_ref_id": archived_id,
+        })
+        assert resp.status_code == 400
+        assert resp.json()["detail"]["error_code"] == "INVALID_CONDITION_REF"
+
+    def test_pre_migration_style_request_without_new_fields_still_open_on_live_postgres(self, app_and_client):
+        """
+        يحاكي سجلًا تاريخيًا: طلب شراء بلا condition_ref_id/notes (كلاهما
+        NULL بعد الترحيل 028، بلا Backfill تخميني)، ويتأكد أن المسارات
+        القائمة (بما فيها القبول لاحقًا) غير متأثرة بغياب الحقلين.
+        """
+        app, client, conn = app_and_client
+        part_id = _make_approved_part(client, conn)
+        _register_and_login(client, conn, f"buyer-cr022d-{uuid.uuid4().hex[:8]}@example.com")
+
+        resp = client.post("/api/v1/purchase-requests",
+                            json={"catalog_part_ref_id": part_id, "trim_ref_id": str(uuid.uuid4())})
+        assert resp.status_code == 201, resp.text
+        assert resp.json()["condition_ref_id"] is None
+        assert resp.json()["notes"] is None
+
+        cur = conn.cursor()
+        cur.execute("SELECT condition_ref_id, notes FROM pur.purchase_requests WHERE id = %s", (resp.json()["id"],))
+        row = cur.fetchone()
+        assert row["condition_ref_id"] is None
+        assert row["notes"] is None
