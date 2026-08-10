@@ -10,14 +10,17 @@ order_api.py — طبقة REST API لخدمة الطلبات وعروض الأس
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Request, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from auth_api import error, get_correlation_id, get_current_session
 from pct_api import get_pct_repository
 from store_api import get_store_repository
+from ref_api import get_ref_repository
 from session_service import Session
 from order_service import (
     DuplicateActiveOfferError,
+    InvalidConditionRefError,
+    InvalidPurchaseRequestNotesError,
     InvalidPurchaseRequestStatusError,
     OfferNotWithdrawableError,
     PurchaseRequestClosedError,
@@ -37,6 +40,9 @@ router = APIRouter(prefix="/api/v1", tags=["orders"])
 class PurchaseRequestCreateRequest(BaseModel):
     catalog_part_ref_id: str
     trim_ref_id: str
+    # CR-022 — النطاق المعتمَد حرفيًا فقط: بلا صور/Media، بلا VCT، بلا CR-020 Search.
+    condition_ref_id: Optional[str] = None  # NULL = بلا تفضيل
+    notes: Optional[str] = Field(default=None, max_length=2000)  # نص عادي، حد 2000 حرف على مستوى API
 
 
 class PurchaseRequestResponse(BaseModel):
@@ -46,6 +52,8 @@ class PurchaseRequestResponse(BaseModel):
     catalog_part_ref_id: str
     trim_ref_id: str
     status: str
+    condition_ref_id: Optional[str] = None  # CR-022
+    notes: Optional[str] = None             # CR-022
 
 
 class PaginationMeta(BaseModel):
@@ -122,6 +130,7 @@ def _pr_response(pr) -> PurchaseRequestResponse:
     return PurchaseRequestResponse(
         id=pr.id, business_code=pr.business_code, buyer_user_ref_id=pr.buyer_user_ref_id,
         catalog_part_ref_id=pr.catalog_part_ref_id, trim_ref_id=pr.trim_ref_id, status=pr.status,
+        condition_ref_id=pr.condition_ref_id, notes=pr.notes,
     )
 
 
@@ -140,15 +149,22 @@ def create_purchase_request(
     current_session: Session = Depends(get_current_session),
     order_repo=Depends(get_order_repository),
     pct_repo=Depends(get_pct_repository),
+    ref_repo=Depends(get_ref_repository),
 ):
     try:
         pr = create_purchase_request_via_repository(
             order_repo, buyer_user_ref_id=current_session.user_id,
             catalog_part_ref_id=body.catalog_part_ref_id, trim_ref_id=body.trim_ref_id,
             is_part_approved_checker=pct_repo.is_part_approved,
+            condition_ref_id=body.condition_ref_id, notes=body.notes,
+            is_condition_ref_valid_checker=lambda ref_id: ref_repo.is_value_of_type(ref_id, "part_condition"),
         )
     except ValueError as exc:
         raise error(correlation_id, status.HTTP_409_CONFLICT, "PART_NOT_APPROVED", str(exc))
+    except InvalidConditionRefError as exc:
+        raise error(correlation_id, status.HTTP_400_BAD_REQUEST, "INVALID_CONDITION_REF", str(exc))
+    except InvalidPurchaseRequestNotesError as exc:
+        raise error(correlation_id, status.HTTP_400_BAD_REQUEST, "NOTES_TOO_LONG", str(exc))
     return _pr_response(pr)
 
 

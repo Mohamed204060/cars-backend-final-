@@ -84,10 +84,11 @@ class PostgresOrderRepository(OrderRepository):
         business_code = f"PR-{uuid.uuid4().hex[:29]}"
         with self._connection.cursor() as cur:
             cur.execute(
-                "INSERT INTO pur.purchase_requests (business_code, buyer_user_ref_id, catalog_part_ref_id, trim_ref_id, status) "
-                "VALUES (%(business_code)s, %(buyer_user_ref_id)s, %(catalog_part_ref_id)s, %(trim_ref_id)s, %(status)s) RETURNING id, business_code",
+                "INSERT INTO pur.purchase_requests (business_code, buyer_user_ref_id, catalog_part_ref_id, trim_ref_id, status, condition_ref_id, notes) "
+                "VALUES (%(business_code)s, %(buyer_user_ref_id)s, %(catalog_part_ref_id)s, %(trim_ref_id)s, %(status)s, %(condition_ref_id)s, %(notes)s) RETURNING id, business_code",
                 {"business_code": business_code, "buyer_user_ref_id": pr.buyer_user_ref_id,
-                 "catalog_part_ref_id": pr.catalog_part_ref_id, "trim_ref_id": pr.trim_ref_id, "status": pr.status},
+                 "catalog_part_ref_id": pr.catalog_part_ref_id, "trim_ref_id": pr.trim_ref_id, "status": pr.status,
+                 "condition_ref_id": pr.condition_ref_id, "notes": pr.notes},
             )
             row = cur.fetchone()
             pr.id = row["id"]
@@ -97,7 +98,7 @@ class PostgresOrderRepository(OrderRepository):
     def get_purchase_request_by_id(self, pr_id: str) -> Optional[PurchaseRequest]:
         with self._connection.cursor() as cur:
             cur.execute(
-                "SELECT id, buyer_user_ref_id, catalog_part_ref_id, trim_ref_id, status, business_code "
+                "SELECT id, buyer_user_ref_id, catalog_part_ref_id, trim_ref_id, status, business_code, condition_ref_id, notes "
                 "FROM pur.purchase_requests WHERE id = %(id)s",
                 {"id": pr_id},
             )
@@ -106,7 +107,8 @@ class PostgresOrderRepository(OrderRepository):
             return None
         return PurchaseRequest(id=row["id"], buyer_user_ref_id=row["buyer_user_ref_id"],
                                 catalog_part_ref_id=row["catalog_part_ref_id"], trim_ref_id=row["trim_ref_id"],
-                                status=row["status"], business_code=row["business_code"])
+                                status=row["status"], business_code=row["business_code"],
+                                condition_ref_id=row["condition_ref_id"], notes=row["notes"])
 
     def update_purchase_request(self, pr: PurchaseRequest) -> PurchaseRequest:
         with self._connection:

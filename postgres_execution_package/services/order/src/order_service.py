@@ -47,6 +47,9 @@ class PurchaseRequestDisplayView:
     manufacturer_name: Optional[str]
 
 
+MAX_PURCHASE_REQUEST_NOTES_LENGTH = 2000  # CR-022: حد API على buyer notes (نقاط رمز Unicode، لا بايت)
+
+
 @dataclass
 class PurchaseRequest:
     id: str
@@ -56,6 +59,9 @@ class PurchaseRequest:
     status: str = "open"
     has_received_offer: bool = False  # CR-002: يقيِّد تعديل الحقول بعد أول عرض
     business_code: Optional[str] = None  # REQ-PUR-015: معرّف أعمال ظاهر؛ يُسنَد عبر Repository
+    # CR-022 — النطاق المعتمَد حرفيًا فقط: بلا صور/Media، بلا VCT، بلا CR-020 Search.
+    condition_ref_id: Optional[str] = None  # SSOT: إشارة مرجعية اختيارية لـ ref.ref_values(part_condition)؛ NULL = بلا تفضيل
+    notes: Optional[str] = None             # ملاحظات المشتري الاختيارية، نص عادي، حد 2000 حرف
 
 
 @dataclass
@@ -91,6 +97,14 @@ class OfferNotWithdrawableError(Exception):
     """REQ-PUR-018: سحب العرض مسموح فقط قبل القبول."""
 
 
+class InvalidConditionRefError(Exception):
+    """CR-022: condition_ref_id غير موجود أو ليس من نوع part_condition نشط."""
+
+
+class InvalidPurchaseRequestNotesError(Exception):
+    """CR-022: buyer notes تتجاوز الحد الأقصى المسموح (2000 حرف)."""
+
+
 PR_ALLOWED_TRANSITIONS = {
     "open": {"under_review", "cancelled", "expired"},
     "under_review": {"fulfilled", "cancelled", "expired"},
@@ -105,16 +119,36 @@ PR_ALLOWED_TRANSITIONS = {
 # ---------------------------------------------------------------------------
 
 def create_purchase_request(buyer_user_ref_id: str, catalog_part_ref_id: str, trim_ref_id: str,
-                             is_part_approved_checker=None) -> PurchaseRequest:
+                             is_part_approved_checker=None, condition_ref_id: Optional[str] = None,
+                             notes: Optional[str] = None, is_condition_ref_valid_checker=None) -> PurchaseRequest:
     """
     catalog-only creation: لا يُنشأ الطلب إلا لقطعة كتالوج (لا نص حر)؛ التحقق
     من اعتمادها عبر دالة محقونة اختيارية من PCT (نفس نمط SSOT في الخدمات
     السابقة)، لا استعلامًا مباشرًا.
+
+    CR-022 — النطاق المعتمَد حرفيًا فقط: condition_ref_id اختياري (NULL =
+    بلا تفضيل)، يُتحقَّق منه عبر دالة محقونة من REF (نفس نمط SSOT)؛ notes
+    اختيارية نص عادي بحد أقصى MAX_PURCHASE_REQUEST_NOTES_LENGTH حرفًا
+    (نقاط رمز Unicode). لا Backfill، لا صور، لا VCT، لا CR-020 Search.
     """
     if is_part_approved_checker is not None and not is_part_approved_checker(catalog_part_ref_id):
         raise ValueError(f"قطعة الكتالوج المرجعية '{catalog_part_ref_id}' غير معتمدة أو غير موجودة.")
+
+    if condition_ref_id is not None and is_condition_ref_valid_checker is not None \
+            and not is_condition_ref_valid_checker(condition_ref_id):
+        raise InvalidConditionRefError(
+            f"إشارة الحالة المرجعية '{condition_ref_id}' غير موجودة أو ليست من نوع 'part_condition' نشط."
+        )
+
+    if notes is not None and len(notes) > MAX_PURCHASE_REQUEST_NOTES_LENGTH:
+        raise InvalidPurchaseRequestNotesError(
+            f"ملاحظات المشتري يجب ألا تتجاوز {MAX_PURCHASE_REQUEST_NOTES_LENGTH} حرفًا "
+            f"(الطول الحالي: {len(notes)})."
+        )
+
     return PurchaseRequest(id="", buyer_user_ref_id=buyer_user_ref_id,
-                            catalog_part_ref_id=catalog_part_ref_id, trim_ref_id=trim_ref_id)
+                            catalog_part_ref_id=catalog_part_ref_id, trim_ref_id=trim_ref_id,
+                            condition_ref_id=condition_ref_id, notes=notes)
 
 
 def transition_purchase_request_status(pr: PurchaseRequest, new_status: str) -> PurchaseRequest:
@@ -238,8 +272,13 @@ def accept_offer(pr: PurchaseRequest, offer_to_accept: Offer, all_offers_for_pr:
 
 def create_purchase_request_via_repository(repository, buyer_user_ref_id: str,
                                             catalog_part_ref_id: str, trim_ref_id: str,
-                                            is_part_approved_checker=None) -> PurchaseRequest:
-    pr = create_purchase_request(buyer_user_ref_id, catalog_part_ref_id, trim_ref_id, is_part_approved_checker)
+                                            is_part_approved_checker=None,
+                                            condition_ref_id: Optional[str] = None,
+                                            notes: Optional[str] = None,
+                                            is_condition_ref_valid_checker=None) -> PurchaseRequest:
+    pr = create_purchase_request(buyer_user_ref_id, catalog_part_ref_id, trim_ref_id,
+                                  is_part_approved_checker, condition_ref_id, notes,
+                                  is_condition_ref_valid_checker)
     return repository.insert_purchase_request(pr)
 
 
