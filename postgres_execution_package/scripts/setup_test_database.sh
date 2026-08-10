@@ -3,7 +3,7 @@
 # الحالة: Prepared — لم يُشغَّل فعليًا في هذه الجلسة (لا اتصال شبكة/PostgreSQL هنا)
 #
 # الغرض: إنشاء قاعدة بيانات اختبار فارغة تمامًا، ثم تطبيق كل ملفات
-# الترحيل (000 حتى 027) بالترتيب الرقمي من الصفر. الحزمة مكتفية ذاتيًا
+# الترحيل (000 حتى 028) بالترتيب الرقمي من الصفر. الحزمة مكتفية ذاتيًا
 # بالكامل: لا اعتماد على أي ملف خارج مجلد migrations/ المرفَق هنا.
 #
 # الاستخدام (في بيئة خارجية فعلية تدعم PostgreSQL):
@@ -23,10 +23,10 @@ REQUIRED_FILES=(
   "017_add_store_location.sql" "018_ntf.sql" "019_sys_scheduler.sql" "020_com_extended.sql"
   "021_trm_unified_ratings.sql" "022_postgresql_validation_runtime_fixes.sql"
   "023_iam_sessions.sql" "025_sys_idempotency_keys.sql" "026_sub_free_plan.sql"
-  "027_com_conversation_participants.sql"
+  "027_com_conversation_participants.sql" "028_pur_purchase_request_condition_notes.sql"
 )
 
-echo "=== التحقق من اكتمال جميع ملفات الترحيل المطلوبة (000-027) قبل أي تنفيذ ==="
+echo "=== التحقق من اكتمال جميع ملفات الترحيل المطلوبة (000-028) قبل أي تنفيذ ==="
 missing=0
 for f in "${REQUIRED_FILES[@]}"; do
   if [ ! -f "$MIGRATIONS_DIR/$f" ]; then
@@ -38,7 +38,7 @@ if [ "$missing" -eq 1 ]; then
   echo "=== فشل التحقق: ملفات ترحيل مطلوبة مفقودة؛ توقُّف قبل أي تنفيذ فعلي على قاعدة البيانات ==="
   exit 1
 fi
-echo "=== نجاح: جميع ملفات الترحيل الـ27 (000-027، بلا 024) موجودة فعليًا في الحزمة — CR-015 ==="
+echo "=== نجاح: جميع ملفات الترحيل الـ28 (000-028، بلا 024) موجودة فعليًا في الحزمة — CR-022 ==="
 
 echo "=== إسقاط قاعدة الاختبار إن وُجدت (لضمان بداية نظيفة فعلية) ==="
 dropdb --if-exists "$DB_NAME"
@@ -46,7 +46,7 @@ dropdb --if-exists "$DB_NAME"
 echo "=== إنشاء قاعدة اختبار فارغة تمامًا ==="
 createdb "$DB_NAME"
 
-echo "=== تطبيق كل ملفات الترحيل بالترتيب الرقمي (000 حتى 027) ==="
+echo "=== تطبيق كل ملفات الترحيل بالترتيب الرقمي (000 حتى 028) ==="
 for f in "${REQUIRED_FILES[@]}"; do
   echo "--- تطبيق: $f ---"
   psql -d "$DB_NAME" -v ON_ERROR_STOP=1 -f "$MIGRATIONS_DIR/$f"
