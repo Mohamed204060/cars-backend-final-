@@ -391,6 +391,11 @@ class TestCR022PurchaseRequestConditionAndNotes:
     """CR-022 — Purchase Request Condition & Buyer Notes (النطاق المعتمَد حرفيًا فقط)."""
 
     def test_condition_ref_id_null_accepted_as_no_preference(self, app_and_client):
+        """
+        Backward Compatibility: إنشاء Purchase Request بدون condition_ref_id
+        (ولا notes) يعمل تمامًا كسلوك ما قبل CR-022 — نفس الحقول الأصلية
+        بلا تغيير، مع NULL/NULL الصريحين على الحقلين الجديدين فقط.
+        """
         app, client = app_and_client
         part_id = _make_approved_part(app, client)
         _login_as(app, client, "buyer-cr022-1@example.com")
@@ -399,6 +404,10 @@ class TestCR022PurchaseRequestConditionAndNotes:
                             json={"catalog_part_ref_id": part_id, "trim_ref_id": "trim-1"})
         assert resp.status_code == 201
         body = resp.json()
+        assert body["status"] == "open"
+        assert body["business_code"].startswith("PR-")
+        assert body["catalog_part_ref_id"] == part_id
+        assert body["trim_ref_id"] == "trim-1"
         assert body["condition_ref_id"] is None
         assert body["notes"] is None
 

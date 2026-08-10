@@ -17,6 +17,7 @@ from message_extended_api import router as message_extended_router
 from message_extended_repository import InMemoryMessageExtendedRepository
 from order_api import router as order_router
 from order_repository import InMemoryOrderRepository
+from ref_repository import InMemoryRefRepository
 from store_api import router as store_router
 from store_repository import InMemoryStoreRepository
 from inventory_item_api import router as inventory_router
@@ -42,6 +43,11 @@ def app_and_client():
     # الذي يحقن order_repo/store_repo/inventory_repo — مطلوبة هنا حتى لو لم
     # تختبر هذه الحزمة سيناريوهات purchase_request/inventory_item مباشرة.
     app.state.order_repository = InMemoryOrderRepository()
+    # CR-022: order_api.create_purchase_request يعتمد الآن على ref_repository
+    # أيضًا (تحقق condition_ref_id) — order_router مُسجَّل في هذا التطبيق،
+    # فتُهيَّأ وقائيًا بنفس منطق order_repository أعلاه، رغم أن هذه الحزمة
+    # لا تختبر مسار الإنشاء مباشرة.
+    app.state.ref_repository = InMemoryRefRepository()
     app.state.store_repository = InMemoryStoreRepository()
     app.state.inventory_repository = InMemoryInventoryItemRepository()
 

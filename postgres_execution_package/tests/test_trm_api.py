@@ -15,6 +15,7 @@ from pct_api import router as pct_router
 from pct_repository import InMemoryPctRepository
 from order_api import router as order_router
 from order_repository import InMemoryOrderRepository
+from ref_repository import InMemoryRefRepository
 from store_api import router as store_router
 from store_repository import InMemoryStoreRepository
 from trm_api import router as trm_router
@@ -35,6 +36,7 @@ def app_and_client():
     app.state.session_repository = InMemorySessionRepository()
     app.state.pct_repository = InMemoryPctRepository()
     app.state.order_repository = InMemoryOrderRepository()
+    app.state.ref_repository = InMemoryRefRepository()  # CR-022: order_api.create_purchase_request يعتمد عليه الآن
     app.state.store_repository = InMemoryStoreRepository()
     app.state.trm_repository = InMemoryTrmRepository()
 
