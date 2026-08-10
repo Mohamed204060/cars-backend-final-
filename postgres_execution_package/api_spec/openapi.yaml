@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: منصة قطع غيار السيارات - Auto Parts Marketplace API
-  version: 1.16.0
+  version: 1.15.0
   description: 'مواصفة API تنفيذية، تغطي 15 عملية (Operations) عبر 14 مسارًا (Paths): الواجهات التمثيلية
     الخمس الأصلية الموثّقة بالتفصيل في التصميم التفصيلي (الحزمة 2)، بالإضافة إلى 5 عمليات خدمة Auth (اعتماد
     Contract Extension & Implementation Plan): تسجيل خروج، عرض/إضافة/إزالة وسائل الهوية، وعرض مزوّدي الهوية
@@ -641,19 +641,6 @@ components:
         trim_ref_id:
           type: string
           format: uuid
-        condition_ref_id:
-          type: string
-          format: uuid
-          nullable: true
-          description: >-
-            CR-022: إشارة مرجعية اختيارية لـ ref.ref_values من النوع
-            part_condition. NULL = بلا تفضيل. يُرفَض بـ400 INVALID_CONDITION_REF
-            إن أشار لقيمة غير موجودة أو من نوع مرجعي آخر أو غير نشطة.
-        notes:
-          type: string
-          nullable: true
-          maxLength: 2000
-          description: 'CR-022: ملاحظات المشتري الاختيارية، نص عادي، حد 2000 حرف.'
     PurchaseRequestResponse:
       type: object
       properties:
@@ -680,15 +667,6 @@ components:
           - fulfilled
           - expired
           - cancelled
-        condition_ref_id:
-          type: string
-          format: uuid
-          nullable: true
-          description: 'CR-022: NULL = بلا تفضيل، أو السجل تاريخي سابق للترحيل 028.'
-        notes:
-          type: string
-          nullable: true
-          description: 'CR-022: NULL = لا ملاحظات، أو السجل تاريخي سابق للترحيل 028.'
     OfferResponse:
       type: object
       properties:
