@@ -55,4 +55,4 @@ done
 echo "=== التحقق السريع: عدد المخططات المُنشَأة ==="
 psql -d "$DB_NAME" -c "SELECT schema_name FROM information_schema.schemata WHERE schema_name NOT LIKE 'pg_%' AND schema_name != 'information_schema' ORDER BY schema_name;"
 
-echo "=== نجاح: قاعدة الاختبار '$DB_NAME' جاهزة بكل الجداول من الصفر (27 ملف ترحيل مُطبَّق) ==="
+echo "=== نجاح: قاعدة الاختبار '$DB_NAME' جاهزة بكل الجداول من الصفر (28 ملف ترحيل مُطبَّق) ==="
