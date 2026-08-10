@@ -32,6 +32,19 @@ class RefRepository(ABC):
     def insert_bulk_import_job(self, job: BulkImportJob) -> BulkImportJob:
         raise NotImplementedError
 
+    @abstractmethod
+    def is_value_of_type(self, value_id: str, ref_type: str) -> bool:
+        """
+        CR-022: نقطة التكامل الرسمية للتحقق من أن معرّفًا مرجعيًا يشير فعليًا
+        إلى قيمة **نشطة** (status='active'، REQ-REF-002: أرشفة لا حذف) من
+        نوع محدَّد (مثال: part_condition) — لا يكفي وجود UUID في
+        ref.ref_values من نوع آخر، ولا قيمة مؤرشَفة. نفس دلالة "active" التي
+        يعتمدها get_values_for_type(include_archived=False) افتراضيًا لأي
+        استخدام غير استكشافي. تُمرَّر كدالة محقونة (Dependency Injection)
+        لخدمات أخرى، بنفس نمط is_part_approved في PCT.
+        """
+        raise NotImplementedError
+
 
 class PostgresRefRepository(RefRepository):
     """تنفيذ فعلي عبر PostgreSQL وفق مخطط 002_ref.sql. غير مختبَر على اتصال حي."""
@@ -94,6 +107,10 @@ class PostgresRefRepository(RefRepository):
                     )
         return job
 
+    def is_value_of_type(self, value_id: str, ref_type: str) -> bool:
+        value = self.get_value_by_id(value_id)
+        return value is not None and value.ref_type == ref_type and value.status == "active"
+
 
 class InMemoryRefRepository(RefRepository):
     """تنفيذ وهمي للاختبار فقط."""
@@ -124,3 +141,7 @@ class InMemoryRefRepository(RefRepository):
         self._seq["job"] += 1
         self._jobs[job.id] = job
         return job
+
+    def is_value_of_type(self, value_id: str, ref_type: str) -> bool:
+        value = self.get_value_by_id(value_id)
+        return value is not None and value.ref_type == ref_type and value.status == "active"
