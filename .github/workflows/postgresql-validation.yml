@@ -135,6 +135,87 @@ jobs:
           test "$migration_count" -eq 31
           echo "Execution package structure is valid."
 
+
+      - name: Verify conftest import paths before pytest
+        working-directory: postgres_execution_package
+        run: |
+          set -euo pipefail
+
+          echo "=== conftest.py identity ==="
+          sha256sum tests/conftest.py | tee "../$EVIDENCE_DIR/conftest-sha256.txt"
+
+          expected_sha="8819b8aaf851eac468a08a756636372a72f6baaa05a7e17463d6dd86b819839d"
+          actual_sha="$(sha256sum tests/conftest.py | awk '{print $1}')"
+          echo "expected_sha=$expected_sha"
+          echo "actual_sha=$actual_sha"
+          test "$actual_sha" = "$expected_sha"
+
+          echo
+          echo "=== conftest.py relevant lines ==="
+          grep -nE '(^|[^A-Za-z0-9_])glob|_SERVICES_DIR|services.*/src|_SERVICE_NAMES' tests/conftest.py || true
+
+          echo
+          echo "=== discovered service src directories ==="
+          find services -mindepth 2 -maxdepth 2 -type d -name src -print | sort
+
+          echo
+          echo "=== Python import-path verification ==="
+          python - <<'PY'
+          import hashlib
+          import importlib
+          import importlib.util
+          import pathlib
+          import sys
+
+          package_root = pathlib.Path.cwd()
+          conftest_path = package_root / "tests" / "conftest.py"
+
+          raw = conftest_path.read_bytes()
+          digest = hashlib.sha256(raw).hexdigest()
+          expected = "8819b8aaf851eac468a08a756636372a72f6baaa05a7e17463d6dd86b819839d"
+          print("conftest:", conftest_path)
+          print("sha256:", digest)
+          if digest != expected:
+              raise SystemExit(f"Unexpected conftest.py SHA-256: {digest}")
+
+          # Execute the exact conftest.py that pytest will load.
+          spec = importlib.util.spec_from_file_location("_ci_conftest_probe", conftest_path)
+          if spec is None or spec.loader is None:
+              raise RuntimeError("Could not create import spec for tests/conftest.py")
+          module = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
+
+          service_src_dirs = sorted(
+              p.resolve()
+              for p in (package_root / "services").glob("*/src")
+              if p.is_dir()
+          )
+          print(f"discovered_service_src_dirs={len(service_src_dirs)}")
+          for p in service_src_dirs:
+              present = str(p) in sys.path
+              print(f"{'OK' if present else 'MISSING'} sys.path: {p}")
+              if not present:
+                  raise SystemExit(f"Service src directory was not added to sys.path: {p}")
+
+          required_modules = [
+              "trm_repository",
+              "scheduler_repository",
+              "search_repository",
+              "store_repository",
+              "pct_repository",
+              "vct_repository",
+              "cmp_repository",
+              "advisory_lock",
+          ]
+
+          for name in required_modules:
+              imported = importlib.import_module(name)
+              location = getattr(imported, "__file__", None)
+              print(f"OK import: {name} -> {location}")
+
+          print("CONFTST_IMPORT_PATH_VERIFICATION=PASSED")
+          PY
+
       - name: Create database and apply 31 migrations
         working-directory: postgres_execution_package
         run: |
