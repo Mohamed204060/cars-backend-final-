@@ -132,10 +132,10 @@ jobs:
             echo "missing_files=$missing_files"
           } | tee "$EVIDENCE_DIR/package-verification.txt"
           test "$missing_files" -eq 0
-          test "$migration_count" -eq 28
+          test "$migration_count" -eq 31
           echo "Execution package structure is valid."
 
-      - name: Create database and apply 28 migrations
+      - name: Create database and apply 31 migrations
         working-directory: postgres_execution_package
         run: |
           set -euo pipefail
