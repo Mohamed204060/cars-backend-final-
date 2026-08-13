@@ -1,0 +1,5450 @@
+openapi: 3.0.3
+info:
+  title: منصة قطع غيار السيارات - Auto Parts Marketplace API
+  version: 1.17.0
+  description: 'مواصفة API تنفيذية، تغطي 15 عملية (Operations) عبر 14 مسارًا (Paths): الواجهات التمثيلية
+    الخمس الأصلية الموثّقة بالتفصيل في التصميم التفصيلي (الحزمة 2)، بالإضافة إلى 5 عمليات خدمة Auth (اعتماد
+    Contract Extension & Implementation Plan): تسجيل خروج، عرض/إضافة/إزالة وسائل الهوية، وعرض مزوّدي الهوية
+    المفعَّلين — فتصبح عمليات Auth تحديدًا 6 عمليات شاملة /auth/login الأصلية. وبالإضافة أيضًا إلى 5 عمليات
+    خدمة PCT (الكتالوج): اقتراح قطعة، عرضها، اعتمادها (مدير النظام فقط، REQ-PCT-002)، إضافة اسم مترجَم،
+    وتسجيل رقم OEM. وبالإضافة إلى 7 عمليات خدمة VCT (كتالوج السيارات): اقتراح واعتماد شركة مصنّعة (مدير
+    النظام فقط، REQ-VCT-002)، عرضها، اقتراح موديل تحت شركة معتمَدة (REQ-VCT-003)، إضافة جيل، إضافة فئة
+    سيارة، وعرض فئة سيارة. وبالإضافة إلى 4 عمليات خدمة CMP (التوافق): إنشاء سجل توافق بين قطعة معتمَدة
+    وفئة صالحة (مدير النظام فقط، REQ-CMP-001/002)، عرض سجل، عرض كل سجلات قطعة، وأرشفته (مدير النظام فقط،
+    REQ-CMP-003). وبالإضافة أيضًا إلى خدمتَي Store وInventory: إنشاء/ عرض متجر، تغيير حالته (مدير نظام
+    أو مشرف، REQ-STR-004)، نقل ملكيته (مدير نظام حصريًا، REQ-STR-006)؛ وعرض/تحديث كمية/تسعير/إخفاء/إظهار/
+    أرشفة عنصر مخزون (البائع المالك فقط، REQ-STR-019) إلى جانب /inventory-items الأصلية (إنشاء العنصر،
+    مع Idempotency-Key مطلوب). جميع مسارات هذا الإصدار موحَّدة تحت البادئة /api/v1 اتساقًا مع DD الحزمة
+    2، القسم 2.1. كل عملية موسومة بامتداد x-traceability يربطها بمعرّفات المتطلبات (REQ) وقرارات ADR/Change
+    Request ذات الصلة.
+
+    '
+  x-governance: 'أي تغيير غير متوافق على أي عملية يستوجب إصدار نسخة عقد جديدة (/api/v{n}) بدلاً من تعديل
+    هذه النسخة مباشرة (DD الحزمة 2، القسم 2.1). هذا الملف يُوسَّع تدريجيًا؛ لا يُحذَف أو يُعدَّل أي عملية
+    قائمة دون Change Request رسمي وفق دليل حوكمة التنفيذ. عمليات التسجيل/الدخول عبر Google/Facebook/X
+    (REQ-IAM-011) مؤجَّلة عمدًا إلى Increment لاحق ضمن مرحلة Auth، بانتظار ADR يحسم تدفق التحقق الآمن؛
+    لا عملية OAuth موثَّقة هنا حتى صدوره.
+
+    '
+servers:
+- url: /api/v1
+  description: الإصدار الأول من عقود API (URI Versioning، DD الحزمة 2)
+security:
+- sessionAuth: []
+components:
+  securitySchemes:
+    sessionAuth:
+      type: apiKey
+      in: cookie
+      name: session_id
+      description: 'جلسة مستخدم صادرة عن وحدة IAM بعد تسجيل دخول ناجح (REQ-IAM-003)، مدعومة بجدول iam.sessions
+        (CR-013). تُسلَّم عبر Set-Cookie بخصائص HttpOnly (لا يقرأها JavaScript) وSecure (HTTPS فقط) وSameSite=Lax
+        كحد أدنى. يُخزَّن على الخادم بصمة SHA-256 للتوكن فقط، لا التوكن الخام (اتساقًا مع REQ-SEC-002).
+        غير مطلوبة لعمليات الوصول العام مثل تسجيل الدخول نفسه أو البحث أو عرض مزوّدي الهوية المفعَّلين.
+
+        '
+  parameters:
+    CorrelationIdHeader:
+      name: X-Correlation-Id
+      in: header
+      required: false
+      description: 'معرّف تتبع اختياري يرفقه المستهلك؛ إن غاب يُنشئ النظام معرّفًا جديدًا عند نقطة الدخول
+        (SAD الحزمة 4، DD الحزمة 2 القسم 2.4).
+
+        '
+      schema:
+        type: string
+        format: uuid
+    IdempotencyKeyHeader:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: 'مفتاح عدم تكرار للعمليات الحساسة المعرَّضة لإعادة الإرسال (DD الحزمة 2، القسم 2.2).
+        مطلوب فعليًا (required) على مستوى العملية عند الإنشاء، لا على مستوى الوثيقة العام.
+
+        '
+      schema:
+        type: string
+  schemas:
+    ErrorResponse:
+      type: object
+      description: نموذج الخطأ الموحّد المعتمد لجميع واجهات API (DD الحزمة 2، القسم 2.1/2.2)
+      required:
+      - correlation_id
+      - error_code
+      - message
+      properties:
+        correlation_id:
+          type: string
+          format: uuid
+        error_code:
+          type: string
+          example: PART_NOT_APPROVED
+        message:
+          type: string
+        details:
+          type: array
+          items:
+            type: object
+            properties:
+              field:
+                type: string
+              reason:
+                type: string
+    PaginationMeta:
+      type: object
+      description: بيانات التقسيم الموحّدة (DD الحزمة 2، القسم 2.3)
+      properties:
+        page:
+          type: integer
+          minimum: 1
+        page_size:
+          type: integer
+          minimum: 1
+        total_items:
+          type: integer
+    LoginRequest:
+      type: object
+      required:
+      - login_identifier
+      - password
+      properties:
+        login_identifier:
+          type: string
+        password:
+          type: string
+          format: password
+    LoginResponse:
+      type: object
+      description: 'لا يتضمَّن التوكن الخام (session_id) في جسم الاستجابة عمدًا (تصحيح CR-013)؛ يُسلَّم
+        حصرًا عبر Set-Cookie بخصائص HttpOnly وSecure وSameSite، لمنع وصول أي كود JavaScript إليه ولو عبر
+        قراءة جسم استجابة تسجيل الدخول نفسها.
+
+        '
+      properties:
+        primary_role:
+          type: string
+        account_status:
+          type: string
+    InventoryItemCreateRequest:
+      type: object
+      required:
+      - catalog_part_ref_id
+      - condition_ref_id
+      - pricing_mode
+      - quantity
+      properties:
+        catalog_part_ref_id:
+          type: string
+          format: uuid
+        condition_ref_id:
+          type: string
+          format: uuid
+        pricing_mode:
+          type: string
+          enum:
+          - fixed_price
+          - contact_for_price
+        price_amount:
+          type: number
+          format: double
+        price_currency:
+          type: string
+          minLength: 3
+          maxLength: 3
+        quantity:
+          type: integer
+          minimum: 0
+        photo_asset_refs:
+          type: array
+          items:
+            type: string
+    InventoryItemCreateResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        business_code:
+          type: string
+        status:
+          type: string
+    OfferSubmitRequest:
+      type: object
+      required:
+      - amount
+      - currency
+      - provides_shipping
+      properties:
+        amount:
+          type: number
+          format: double
+        currency:
+          type: string
+          minLength: 3
+          maxLength: 3
+        provides_shipping:
+          type: boolean
+        notes:
+          type: string
+    OfferSubmitResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        business_code:
+          type: string
+        status:
+          type: string
+          enum:
+          - submitted
+    SearchResultItem:
+      type: object
+      properties:
+        inventory_item_id:
+          type: string
+          format: uuid
+        business_code:
+          type: string
+        part_name:
+          type: string
+        store_id:
+          type: string
+          format: uuid
+        store_name:
+          type: string
+        image_url:
+          type: string
+        price_amount:
+          type: number
+          nullable: true
+        price_display_text:
+          type: string
+          description: نص بديل عند غياب السعر (REQ-STR-014)
+    SearchResponse:
+      type: object
+      properties:
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/SearchResultItem'
+        effective_country_code:
+          type: string
+          description: الدولة الفعّالة المستخدَمة في التصفية (REQ-SRC-006-C)
+        effective_country_source:
+          type: string
+          enum:
+          - account
+          - geolocation
+          - ip
+          - manual
+          description: مصدر الدولة الفعّالة (مقترح توضيحي معتمَد، DD الحزمة 2 v1.4)
+        pagination:
+          $ref: '#/components/schemas/PaginationMeta'
+    BulkImportPreviewResponse:
+      type: object
+      properties:
+        job_id:
+          type: string
+          format: uuid
+        new_count:
+          type: integer
+        updated_count:
+          type: integer
+        rejected_count:
+          type: integer
+        rejected_rows:
+          type: array
+          items:
+            type: object
+            properties:
+              row_number:
+                type: integer
+              reason:
+                type: string
+    LogoutResponse:
+      type: object
+      description: تأكيد إلغاء الجلسة فورًا (REQ-SEC-005)
+      properties:
+        status:
+          type: string
+          enum:
+          - logged_out
+    IdentitySummary:
+      type: object
+      description: وصف مختصر لوسيلة هوية مرتبطة بحساب (REQ-IAM-016)
+      properties:
+        id:
+          type: string
+          format: uuid
+        provider_code:
+          type: string
+        is_verified:
+          type: boolean
+        is_primary:
+          type: boolean
+        last_authenticated_at:
+          type: string
+          format: date-time
+          nullable: true
+    IdentityListResponse:
+      type: object
+      properties:
+        identities:
+          type: array
+          items:
+            $ref: '#/components/schemas/IdentitySummary'
+    IdentityAddRequest:
+      type: object
+      description: ربط وسيلة هوية إضافية بحساب المستخدم الحالي (REQ-IAM-015)
+      required:
+      - provider_code
+      - external_identifier
+      properties:
+        provider_code:
+          type: string
+          example: email_password
+        external_identifier:
+          type: string
+        is_verified:
+          type: boolean
+          default: false
+    IdentityAddResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        provider_code:
+          type: string
+        is_verified:
+          type: boolean
+    ProviderSummary:
+      type: object
+      description: وسيلة هوية متاحة حاليًا للتسجيل/الدخول (REQ-IAM-013)
+      properties:
+        code:
+          type: string
+        display_name:
+          type: string
+        category:
+          type: string
+          enum:
+          - password
+          - otp
+          - oauth
+    ProviderListResponse:
+      type: object
+      properties:
+        providers:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProviderSummary'
+    CatalogPartCreateRequest:
+      type: object
+      required:
+      - category_id
+      properties:
+        category_id:
+          type: string
+          format: uuid
+    CatalogPartResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        category_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum:
+          - proposed
+          - approved
+          - archived
+    LocalizedNameCreateRequest:
+      type: object
+      required:
+      - name_value
+      - name_kind
+      properties:
+        name_value:
+          type: string
+        name_kind:
+          type: string
+          enum:
+          - canonical
+          - local
+          - english
+          - synonym
+        locale:
+          type: string
+          nullable: true
+    LocalizedNameResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name_value:
+          type: string
+        name_kind:
+          type: string
+        locale:
+          type: string
+          nullable: true
+    OemNumberCreateRequest:
+      type: object
+      required:
+      - manufacturer_ref_id
+      - oem_number
+      properties:
+        manufacturer_ref_id:
+          type: string
+          format: uuid
+        oem_number:
+          type: string
+    OemNumberResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        manufacturer_ref_id:
+          type: string
+          format: uuid
+        oem_number:
+          type: string
+    ManufacturerResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum:
+          - proposed
+          - approved
+          - archived
+    ModelResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        manufacturer_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum:
+          - proposed
+          - approved
+          - archived
+    GenerationResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        model_id:
+          type: string
+          format: uuid
+        start_year:
+          type: integer
+          nullable: true
+          description: 'Batch 1 §2: وصفي فقط — ليس مصدر الحقيقة النهائي للتوافق (Compatibility هو المصدر الفعلي).'
+        end_year:
+          type: integer
+          nullable: true
+          description: 'Batch 1 §2: وصفي فقط. القاعدة: start_year <= end_year عندما تكون القيمتان موجودتين.'
+    GenerationYearRangeUpdateRequest:
+      type: object
+      properties:
+        start_year:
+          type: integer
+          nullable: true
+        end_year:
+          type: integer
+          nullable: true
+      description: >-
+        Batch 1 §4 (الفقرة الثانية): يُرفَض بـ409 YEAR_RANGE_CONFLICTS_WITH_EXISTING_MODEL_YEARS
+        إذا كان التحديث سيُخرج أي Trim Model Year موجودة فعليًا خارج النطاق الجديد.
+    TrimCreateRequest:
+      type: object
+      required:
+      - fuel_type_ref_id
+      - transmission_type_ref_id
+      properties:
+        fuel_type_ref_id:
+          type: string
+          format: uuid
+        transmission_type_ref_id:
+          type: string
+          format: uuid
+    TrimResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        generation_id:
+          type: string
+          format: uuid
+        fuel_type_ref_id:
+          type: string
+          format: uuid
+        transmission_type_ref_id:
+          type: string
+          format: uuid
+    TrimModelYearCreateRequest:
+      type: object
+      required:
+      - year
+      properties:
+        year:
+          type: integer
+      description: >-
+        Batch 1 §3-4: يُرفَض بـ409 YEAR_OUT_OF_GENERATION_RANGE إن كانت
+        السنة خارج [generation.start_year, generation.end_year] الوصفيين
+        (عند تحديدهما)، وبـ409 DUPLICATE_TRIM_MODEL_YEAR إن كانت نفس السنة
+        مسجَّلة بالفعل لهذه الفئة (UNIQUE(trim_ref_id, year)).
+    TrimModelYearResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        trim_ref_id:
+          type: string
+          format: uuid
+        year:
+          type: integer
+    MarketAvailabilityCreateRequest:
+      type: object
+      required:
+      - country_ref_id
+      properties:
+        country_ref_id:
+          type: string
+          format: uuid
+          description: إشارة مرجعية لـ ref.ref_values(ref_type='country')؛ بلا FK فعلي.
+    MarketAvailabilityResponse:
+      type: object
+      description: >-
+        Batch 1 §7: غياب أي صف لهدف معيَّن (trim أو trim_model_year) يعني
+        Global Availability (بلا قيد سوق). وجود صف واحد أو أكثر يجعل تلك
+        الصفوف Whitelist صارمة. Trim-level وYear-specific لنفس Trim
+        ممنوعان من التعايش (409 MARKET_AVAILABILITY_LEVEL_CONFLICT، يُفرَض
+        Transactionally عبر Advisory Lock).
+      properties:
+        id:
+          type: string
+          format: uuid
+        country_ref_id:
+          type: string
+          format: uuid
+        trim_ref_id:
+          type: string
+          format: uuid
+          nullable: true
+        trim_model_year_ref_id:
+          type: string
+          format: uuid
+          nullable: true
+    CompatibilityRecordCreateRequest:
+      type: object
+      required:
+      - catalog_part_ref_id
+      properties:
+        catalog_part_ref_id:
+          type: string
+          format: uuid
+        trim_ref_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: >-
+            General Compatibility — القطعة تناسب كل سنوات الفئة. Batch 1:
+            أصبح اختياريًا (كان إلزاميًا)؛ الطلبات القديمة (trim_ref_id
+            فقط) تعمل بلا أي تغيير في السلوك.
+        trim_model_year_ref_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: >-
+            Batch 1 §10-13: Year-specific Compatibility — القطعة تناسب
+            سنة محدَّدة فقط من الفئة. يجب تحديد trim_ref_id أو
+            trim_model_year_ref_id، واحد بالضبط (400
+            INVALID_COMPATIBILITY_TARGET خلاف ذلك). لا تعايش General
+            وYear-specific لنفس (قطعة، فئة) — 409
+            COMPATIBILITY_LEVEL_CONFLICT، يُفرَض Transactionally عبر
+            Advisory Lock (§13، §16).
+      description: 'Exactly One Target: إما trim_ref_id (General) أو trim_model_year_ref_id (Year-specific)، لا كلاهما ولا لا شيء.'
+    CompatibilityRecordResponse:
+      type: object
+      description: >-
+        يقتصر على الحقول المخزَّنة فعليًا في 007_cmp.sql + 030 (Batch 1).
+        حقول fitment_type/compatibility_notes/source المذكورة في كود
+        الخدمة كخطة مستقبلية (Backlog) لا تقابلها أعمدة في قاعدة البيانات
+        بعد، وتستوجب Migration وقرارًا حوكميًا منفصلَين قبل إضافتها لهذا
+        العقد.
+      properties:
+        id:
+          type: string
+          format: uuid
+        catalog_part_ref_id:
+          type: string
+          format: uuid
+        trim_ref_id:
+          type: string
+          format: uuid
+          nullable: true
+        trim_model_year_ref_id:
+          type: string
+          format: uuid
+          nullable: true
+        status:
+          type: string
+          enum:
+          - active
+          - archived
+    StoreCreateRequest:
+      type: object
+      properties:
+        country_ref_id:
+          type: string
+          format: uuid
+          nullable: true
+        city_ref_id:
+          type: string
+          format: uuid
+          nullable: true
+    StoreResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        owner_user_ref_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum:
+          - creating
+          - active
+          - suspended
+          - archived
+        country_ref_id:
+          type: string
+          format: uuid
+          nullable: true
+        city_ref_id:
+          type: string
+          format: uuid
+          nullable: true
+    StoreStatusUpdateRequest:
+      type: object
+      required:
+      - new_status
+      properties:
+        new_status:
+          type: string
+          enum:
+          - creating
+          - active
+          - suspended
+          - archived
+    StoreTransferOwnershipRequest:
+      type: object
+      required:
+      - new_owner_user_ref_id
+      properties:
+        new_owner_user_ref_id:
+          type: string
+          format: uuid
+    InventoryItemFullResponse:
+      type: object
+      description: العرض الكامل لعنصر المخزون (يختلف عن InventoryItemCreateResponse المختصَرة عند الإنشاء)
+      properties:
+        id:
+          type: string
+          format: uuid
+        store_id:
+          type: string
+          format: uuid
+        catalog_part_ref_id:
+          type: string
+          format: uuid
+        condition_ref_id:
+          type: string
+          format: uuid
+        pricing_mode:
+          type: string
+          enum:
+          - fixed_price
+          - contact_for_price
+        quantity:
+          type: integer
+        price_amount:
+          type: number
+          nullable: true
+        price_currency:
+          type: string
+          nullable: true
+        status:
+          type: string
+          enum:
+          - active
+          - out_of_stock
+          - hidden
+          - archived
+    QuantityUpdateRequest:
+      type: object
+      required:
+      - new_quantity
+      properties:
+        new_quantity:
+          type: integer
+          minimum: 0
+    PricingUpdateRequest:
+      type: object
+      required:
+      - pricing_mode
+      properties:
+        pricing_mode:
+          type: string
+          enum:
+          - fixed_price
+          - contact_for_price
+        price_amount:
+          type: number
+          nullable: true
+        price_currency:
+          type: string
+          nullable: true
+    PurchaseRequestCreateRequest:
+      type: object
+      required:
+      - catalog_part_ref_id
+      - trim_ref_id
+      properties:
+        catalog_part_ref_id:
+          type: string
+          format: uuid
+        trim_ref_id:
+          type: string
+          format: uuid
+          description: >-
+            Batch 1 (Approved VCT Design Baseline §23): يُتحقَّق منه الآن
+            فعليًا عبر VCT الحقيقي (لم يعد نصًا حرًا غير موثوق). يُرفَض
+            بـ404 TRIM_NOT_FOUND إن لم توجد الفئة.
+        trim_model_year_ref_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: >-
+            Batch 1 §23: سنة موديل دقيقة اختيارية ضمن trim_ref_id — يجب أن
+            تنتمي فعليًا لنفس trim_ref_id المحدَّد، وإلا يُرفَض بـ404
+            TRIM_MODEL_YEAR_NOT_FOUND. NULL = لم يحدِّد المشتري سنة دقيقة
+            (أي سنة ضمن الفئة).
+        condition_ref_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: >-
+            CR-022: إشارة مرجعية اختيارية لـ ref.ref_values من النوع
+            part_condition. NULL = بلا تفضيل. يُرفَض بـ400 INVALID_CONDITION_REF
+            إن أشار لقيمة غير موجودة أو من نوع مرجعي آخر أو غير نشطة.
+        notes:
+          type: string
+          nullable: true
+          maxLength: 2000
+          description: 'CR-022: ملاحظات المشتري الاختيارية، نص عادي، حد 2000 حرف.'
+    PurchaseRequestResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        business_code:
+          type: string
+          nullable: true
+        buyer_user_ref_id:
+          type: string
+          format: uuid
+        catalog_part_ref_id:
+          type: string
+          format: uuid
+        trim_ref_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum:
+          - open
+          - under_review
+          - fulfilled
+          - expired
+          - cancelled
+        condition_ref_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: 'CR-022: NULL = بلا تفضيل، أو السجل تاريخي سابق للترحيل 028.'
+        notes:
+          type: string
+          nullable: true
+          description: 'CR-022: NULL = لا ملاحظات، أو السجل تاريخي سابق للترحيل 028.'
+        trim_model_year_ref_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: 'Batch 1: NULL = لم يحدَّد سنة دقيقة، أو السجل تاريخي سابق للترحيل 031.'
+    OfferResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        business_code:
+          type: string
+          nullable: true
+        purchase_request_id:
+          type: string
+          format: uuid
+        seller_store_ref_id:
+          type: string
+          format: uuid
+        amount:
+          type: number
+        currency:
+          type: string
+        provides_shipping:
+          type: boolean
+        notes:
+          type: string
+          nullable: true
+        status:
+          type: string
+          enum:
+          - submitted
+          - accepted
+          - rejected
+          - withdrawn
+          - expired
+    MessageSendRequest:
+      type: object
+      required:
+      - context_type
+      - context_ref_id
+      - body
+      properties:
+        context_type:
+          type: string
+          enum:
+          - purchase_request
+          - inventory_item
+        context_ref_id:
+          type: string
+          format: uuid
+        body:
+          type: string
+          minLength: 1
+    MessageResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        conversation_id:
+          type: string
+          format: uuid
+        sender_user_ref_id:
+          type: string
+          format: uuid
+        body:
+          type: string
+        is_deleted_by_sender:
+          type: boolean
+        is_deleted_by_recipient:
+          type: boolean
+    AttachmentCreateRequest:
+      type: object
+      required:
+      - file_name
+      - mime_type
+      - size_bytes
+      properties:
+        file_name:
+          type: string
+        mime_type:
+          type: string
+        size_bytes:
+          type: integer
+    AttachmentResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        message_id:
+          type: string
+          format: uuid
+        file_name:
+          type: string
+        mime_type:
+          type: string
+        size_bytes:
+          type: integer
+    NotificationResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        recipient_id:
+          type: string
+          format: uuid
+        is_read:
+          type: boolean
+        is_archived_by_user:
+          type: boolean
+    RatingCreateRequest:
+      type: object
+      required:
+      - target_type
+      - target_ref_id
+      - source_purchase_request_ref_id
+      - score
+      properties:
+        target_type:
+          type: string
+          enum:
+          - seller
+          - store
+          - purchase_experience
+        target_ref_id:
+          type: string
+          format: uuid
+        source_purchase_request_ref_id:
+          type: string
+          format: uuid
+        score:
+          type: integer
+          minimum: 1
+          maximum: 5
+        comment:
+          type: string
+          nullable: true
+    RatingUpdateRequest:
+      type: object
+      required:
+      - score
+      properties:
+        score:
+          type: integer
+          minimum: 1
+          maximum: 5
+        comment:
+          type: string
+          nullable: true
+    RatingResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        rated_by_user_ref_id:
+          type: string
+          format: uuid
+        target_type:
+          type: string
+        target_ref_id:
+          type: string
+          format: uuid
+        source_purchase_request_ref_id:
+          type: string
+          format: uuid
+        score:
+          type: integer
+        comment:
+          type: string
+          nullable: true
+        status:
+          type: string
+          enum:
+          - active
+          - archived
+    AverageScoreResponse:
+      type: object
+      properties:
+        target_type:
+          type: string
+        target_ref_id:
+          type: string
+          format: uuid
+        average_score:
+          type: number
+          nullable: true
+    ScheduledJobCreateRequest:
+      type: object
+      required:
+      - job_type
+      - target_ref_id
+      - scheduled_at
+      properties:
+        job_type:
+          type: string
+        target_ref_id:
+          type: string
+          format: uuid
+        scheduled_at:
+          type: string
+          format: date-time
+        recurrence_rule:
+          type: string
+          enum:
+          - daily
+          - weekly
+          - monthly
+          nullable: true
+    ScheduledJobResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        job_type:
+          type: string
+        target_ref_id:
+          type: string
+          format: uuid
+        scheduled_at:
+          type: string
+          format: date-time
+        recurrence_rule:
+          type: string
+          nullable: true
+        status:
+          type: string
+          enum:
+          - pending
+          - executing
+          - completed
+          - cancelled
+          - failed
+        last_run_at:
+          type: string
+          format: date-time
+          nullable: true
+    RefValueCreateRequest:
+      type: object
+      required:
+      - ref_type
+      - code
+      properties:
+        ref_type:
+          type: string
+          enum:
+          - country
+          - city
+          - language
+          - fuel_type
+          - transmission_type
+          - engine_type
+          - part_condition
+          - subscription_type
+        code:
+          type: string
+    RefValueResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        ref_type:
+          type: string
+        code:
+          type: string
+        status:
+          type: string
+          enum:
+          - active
+          - archived
+    PlanCreateRequest:
+      type: object
+      required:
+      - plan_type_ref_id
+      properties:
+        plan_type_ref_id:
+          type: string
+          format: uuid
+    PlanResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        plan_type_ref_id:
+          type: string
+          format: uuid
+        is_free:
+          type: boolean
+          default: false
+          description: CR-014؛ خطة Free النظامية الوحيدة، لا تُنشأ عبر POST /plans
+    SubscribeRequest:
+      type: object
+      required:
+      - plan_id
+      properties:
+        plan_id:
+          type: string
+          format: uuid
+        duration_days:
+          type: integer
+          default: 30
+          minimum: 1
+    ChangePlanRequest:
+      type: object
+      required:
+      - new_plan_id
+      properties:
+        new_plan_id:
+          type: string
+          format: uuid
+    SubscriptionResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        seller_ref_id:
+          type: string
+          format: uuid
+        plan_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum:
+          - active
+          - expired
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+    ArticleCreateRequest:
+      type: object
+      required:
+      - title
+      - body
+      properties:
+        title:
+          type: string
+        body:
+          type: string
+    ArticleResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        author_ref_id:
+          type: string
+          format: uuid
+        title:
+          type: string
+        body:
+          type: string
+        status:
+          type: string
+          enum:
+          - unpublished
+          - published
+    TicketCreateRequest:
+      type: object
+      required:
+      - subject
+      properties:
+        subject:
+          type: string
+    TicketResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        requester_ref_id:
+          type: string
+          format: uuid
+        assigned_moderator_ref_id:
+          type: string
+          format: uuid
+          nullable: true
+        subject:
+          type: string
+        status:
+          type: string
+          enum:
+          - open
+          - in_progress
+          - resolved
+          - closed
+        reopen_window_expires_at:
+          type: string
+          format: date-time
+          nullable: true
+    AssignRequest:
+      type: object
+      required:
+      - moderator_ref_id
+      properties:
+        moderator_ref_id:
+          type: string
+          format: uuid
+    ReplyCreateRequest:
+      type: object
+      required:
+      - body
+      properties:
+        body:
+          type: string
+          minLength: 1
+    ReplyResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        ticket_id:
+          type: string
+          format: uuid
+        author_ref_id:
+          type: string
+          format: uuid
+        body:
+          type: string
+    PurchaseRequestListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/PurchaseRequestResponse'
+        pagination:
+          $ref: '#/components/schemas/PaginationMeta'
+      description: 'CR-015: GET /purchase-requests/mine'
+    OfferListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/OfferResponse'
+        pagination:
+          $ref: '#/components/schemas/PaginationMeta'
+      description: 'CR-015: GET /purchase-requests/{prId}/offers — النطاق يعتمد على صلاحية الطالب: صاحب
+        طلب الشراء يرى كل العروض؛ بائع يرى عرضه هو فقط (تصفية على مستوى الاستعلام، لا حقل إضافي في الجسم).'
+    OfferDisplayResponse:
+      type: object
+      description: >-
+        Batch 1 (Offers Integration): العرض + سياق الطلب المحلول بالكامل —
+        لا Raw IDs حيث يوجد اسم حقيقي يمكن حله. offers.notes (ملاحظات
+        البائع) تُعرَض كما هي Plain Text. Scoping مطابق تمامًا لـ
+        GET /purchase-requests/{prId}/offers (نفس منطق الصلاحية). سياق
+        الطلب يُجلَب مرة واحدة فقط لكل الاستدعاء (لا N+1).
+      properties:
+        id:
+          type: string
+          format: uuid
+        business_code:
+          type: string
+          nullable: true
+        seller_store_ref_id:
+          type: string
+          format: uuid
+        amount:
+          type: number
+        currency:
+          type: string
+        provides_shipping:
+          type: boolean
+        seller_notes:
+          type: string
+          nullable: true
+        status:
+          type: string
+        purchase_request_id:
+          type: string
+          format: uuid
+        purchase_request_status:
+          type: string
+        part_name:
+          type: string
+          nullable: true
+        trim_name:
+          type: string
+          nullable: true
+        model_name:
+          type: string
+          nullable: true
+        manufacturer_name:
+          type: string
+          nullable: true
+        generation_name:
+          type: string
+          nullable: true
+        model_year:
+          type: integer
+          nullable: true
+        condition_code:
+          type: string
+          nullable: true
+        buyer_notes:
+          type: string
+          nullable: true
+    OfferDisplayListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/OfferDisplayResponse'
+        pagination:
+          $ref: '#/components/schemas/PaginationMeta'
+    StoreListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/StoreResponse'
+        pagination:
+          $ref: '#/components/schemas/PaginationMeta'
+      description: 'CR-015: GET /store/stores — استخدام إداري فقط (مدير النظام أو المشرف)، لا Directory
+        عام.'
+    InventoryItemListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/InventoryItemFullResponse'
+        pagination:
+          $ref: '#/components/schemas/PaginationMeta'
+      description: 'CR-015: GET /inventory/items/mine — مالك المتجر فقط، كل الحقول شاملة hidden/archived.'
+    InventoryItemPublicResponse:
+      type: object
+      description: 'CR-015: عرض عام محدود الحقول لعنصر مخزون — Schema منفصل بنيويًا عن InventoryItemFullResponse،
+        لا owner فقط استخدام مقيَّد. لا quantity الدقيقة ولا store_id ولا أي حقل داخلي؛ لا حقل توفر مشتق
+        (is_available) — القرار الصريح في CR-015 كان عدم إضافته لعدم اعتماد قاعدة اشتقاقه.'
+      properties:
+        id:
+          type: string
+          format: uuid
+        catalog_part_ref_id:
+          type: string
+          format: uuid
+        condition_ref_id:
+          type: string
+          format: uuid
+        pricing_mode:
+          type: string
+          enum:
+          - fixed_price
+          - contact_for_price
+        price_amount:
+          type: number
+          nullable: true
+        price_currency:
+          type: string
+          nullable: true
+    InventoryItemPublicListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/InventoryItemPublicResponse'
+        pagination:
+          $ref: '#/components/schemas/PaginationMeta'
+      description: 'CR-015: GET /store/stores/{storeId}/inventory-items — عام بالكامل، لا جلسة مطلوبة.
+        يستبعد دومًا hidden/archived على مستوى الاستعلام.'
+    ConversationLastMessagePreview:
+      type: object
+      nullable: true
+      properties:
+        body_preview:
+          type: string
+          maxLength: 140
+        sent_at:
+          type: string
+          format: date-time
+          description: مصدره com.messages.created_at (عمود موجود أصلًا منذ 011_com.sql، لم يكن مكشوفًا
+            قبل CR-015).
+    ConversationSummaryResponse:
+      type: object
+      description: 'CR-015: لا unread_count — تتبُّع القراءة (com.message_delivery_tracking) موجود بنيويًا
+        لكن لا مسار REST يكتب read_at فعليًا حاليًا؛ إضافة الحقل الآن كانت ستُنتج قيمة مضلِّلة دائمًا.
+        other_participant_user_ref_ids قائمة لا معرّف واحد: محادثة سياق purchase_request قد تضم أكثر من
+        بائع فعليًا (لا تقسيم للمحادثة حسب مقدّم العرض في التصميم الحالي).'
+      properties:
+        id:
+          type: string
+          format: uuid
+        context_type:
+          type: string
+          enum:
+          - purchase_request
+          - inventory_item
+        context_ref_id:
+          type: string
+          format: uuid
+        other_participant_user_ref_ids:
+          type: array
+          items:
+            type: string
+            format: uuid
+        last_message:
+          $ref: '#/components/schemas/ConversationLastMessagePreview'
+    ConversationListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ConversationSummaryResponse'
+        pagination:
+          $ref: '#/components/schemas/PaginationMeta'
+      description: 'CR-015: GET /conversations'
+    ScheduledJobListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ScheduledJobResponse'
+        pagination:
+          $ref: '#/components/schemas/PaginationMeta'
+      description: 'CR-015: GET /admin/scheduled-jobs — مدير النظام حصريًا.'
+    CatalogPartListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/CatalogPartResponse'
+        pagination:
+          $ref: '#/components/schemas/PaginationMeta'
+      description: 'CR-015: GET /pct/parts — status=approved (افتراضي): قراءة عامة بلا جلسة. status=proposed
+        أو archived: يتطلب جلسة + دور اعتماد كتالوج (super_admin أو admin — نفس نطاق صلاحية /parts/{id}/approve
+        الموجودة أصلًا).'
+    MeResponse:
+      type: object
+      description: 'CR-016 (Session Introspection): يمكِّن الواجهة من معرفة المستخدم الحالي من الجلسة
+        القائمة فعليًا (بعد Refresh/SSR/فتح مباشر/تبويب جديد) — لا Token جديد، لا تغيير على آلية المصادقة
+        أو خصائص Cookie الحالية (HttpOnly/Secure/SameSite كما هي).'
+      properties:
+        user_id:
+          type: string
+          format: uuid
+        primary_role:
+          type: string
+        account_status:
+          type: string
+      required:
+      - user_id
+      - primary_role
+      - account_status
+    StorePublicResponse:
+      type: object
+      description: 'CR-017: عرض عام لمتجر status=''active'' فقط — يستبعد owner_user_ref_id عمدًا (تسريب
+        خصوصية). غير active → 404.'
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum:
+          - active
+        country_ref_id:
+          type: string
+          format: uuid
+          nullable: true
+        city_ref_id:
+          type: string
+          format: uuid
+          nullable: true
+    RegisterRequest:
+      type: object
+      description: 'CR-018: التسجيل العام مقصور على Provider واحد (email_password) — لا Phone OTP ولا
+        OAuth في هذا النطاق. role_choice لا يقبل أي قيمة إدارية (admin/moderator/super_admin/news_editor/support_moderator)
+        بنيويًا — Enum مقيَّد لقيمتين فقط.'
+      properties:
+        role_choice:
+          type: string
+          enum:
+          - buyer
+          - seller
+        account_type:
+          type: string
+          enum:
+          - individual
+          - business
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          minLength: 8
+          description: الحد الأدنى 8 أحرف فقط — بلا إلزام تركيبة معقَّدة (قرار منتج صريح).
+      required:
+      - role_choice
+      - account_type
+      - email
+      - password
+    RegisterResponse:
+      type: object
+      description: 'CR-018: store_id غير null فقط عند role_choice=''seller'' (REQ-STR-001 — إنشاء متجر
+        تلقائي واحد ضمن نفس المعاملة الذرّية)؛ null للمشتري.'
+      properties:
+        user_id:
+          type: string
+          format: uuid
+        primary_role:
+          type: string
+          enum:
+          - individual_buyer
+          - business_buyer
+          - individual_seller
+          - business_seller
+        account_type:
+          type: string
+          enum:
+          - individual
+          - business
+        store_id:
+          type: string
+          format: uuid
+          nullable: true
+      required:
+      - user_id
+      - primary_role
+      - account_type
+    InventoryItemPublicDetailResponse:
+      type: object
+      description: 'CR-019: توسيع مخصَّص لمسار التفاصيل المفرد فقط — منفصلة تمامًا عن InventoryItemPublicResponse
+        (تخدم القائمة العامة تحت متجر، بلا تغيير). part_name من pct.localized_names (canonical). condition_code
+        هو ref.ref_values.code الخام — لا عمود Label مترجَم موجود في نموذج البيانات الحالي، فلا يُدَّعى
+        وجود ترجمة. لا store_name (GAP-A: Store Public Identity، منفصلة) ولا صورة (GAP-B: Inventory Photos،
+        منفصلة، تحتاج Migration). لا owner_user_ref_id ولا quantity ولا business_code.'
+      properties:
+        id:
+          type: string
+          format: uuid
+        store_id:
+          type: string
+          format: uuid
+        catalog_part_ref_id:
+          type: string
+          format: uuid
+        condition_ref_id:
+          type: string
+          format: uuid
+        part_name:
+          type: string
+          nullable: true
+          description: من pct.localized_names (name_kind='canonical')؛ null إن لم يوجد اسم مُدرَج.
+        condition_code:
+          type: string
+          nullable: true
+          description: ref.ref_values.code الخام؛ null إن لم يُعثَر على القيمة المرجعية.
+        pricing_mode:
+          type: string
+          enum:
+          - fixed_price
+          - contact_for_price
+        price_amount:
+          type: number
+          nullable: true
+        price_currency:
+          type: string
+          nullable: true
+      required:
+      - id
+      - store_id
+      - catalog_part_ref_id
+      - condition_ref_id
+      - pricing_mode
+    PurchaseRequestDisplayResponse:
+      type: object
+      description: >-
+        CR-021: Read Model عرض فقط — منفصلة تمامًا عن PurchaseRequestResponse
+        (لا تُستخدَم في أي مسار كتابة/قبول/رفض/إلغاء). كل حقل اسم قد يكون
+        null (غياب اسم محلَّي حقيقي، لا خطأ). Batch 1 (Approved VCT Design
+        Baseline): generation_name/trim_name/model_year/condition_code/notes
+        أصبحت متاحة الآن فعليًا بعد اكتمال VCT — كانت مؤجَّلة صراحةً في
+        الإصدارات السابقة بانتظار هذا الاكتمال.
+      properties:
+        id:
+          type: string
+          format: uuid
+        business_code:
+          type: string
+          nullable: true
+        status:
+          type: string
+          enum:
+          - open
+          - under_review
+          - fulfilled
+          - expired
+          - cancelled
+        created_at:
+          type: string
+          format: date-time
+        catalog_part_ref_id:
+          type: string
+          format: uuid
+        part_name:
+          type: string
+          nullable: true
+          description: من pct.localized_names (canonical)؛ null إن لم يوجد اسم مُدرَج.
+        trim_ref_id:
+          type: string
+          format: uuid
+        trim_name:
+          type: string
+          nullable: true
+          description: 'Batch 1: من vct.localized_names (owner_type=''trim'').'
+        model_id:
+          type: string
+          format: uuid
+          nullable: true
+        model_name:
+          type: string
+          nullable: true
+          description: من vct.localized_names (owner_type='model').
+        manufacturer_id:
+          type: string
+          format: uuid
+          nullable: true
+        manufacturer_name:
+          type: string
+          nullable: true
+          description: من vct.localized_names (owner_type='manufacturer').
+        generation_id:
+          type: string
+          format: uuid
+          nullable: true
+        generation_name:
+          type: string
+          nullable: true
+          description: 'Batch 1: من vct.localized_names (owner_type=''generation'').'
+        trim_model_year_ref_id:
+          type: string
+          format: uuid
+          nullable: true
+        model_year:
+          type: integer
+          nullable: true
+          description: 'Batch 1: من vct.trim_model_years.year؛ null إن لم يحدِّد المشتري سنة دقيقة.'
+        condition_ref_id:
+          type: string
+          format: uuid
+          nullable: true
+        condition_code:
+          type: string
+          nullable: true
+          description: 'Batch 1: من ref.ref_values.code (part_condition).'
+        notes:
+          type: string
+          nullable: true
+          description: 'Batch 1: ملاحظات المشتري (CR-022)، معروضة كما هي Plain Text.'
+      required:
+      - id
+      - status
+      - created_at
+      - catalog_part_ref_id
+      - trim_ref_id
+    PurchaseRequestDisplayListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/PurchaseRequestDisplayResponse'
+        pagination:
+          $ref: '#/components/schemas/PaginationMeta'
+paths:
+  /api/v1/subscriptions/plans:
+    post:
+      operationId: createSubscriptionPlan
+      summary: تعريف خطة اشتراك جديدة (مدير النظام حصريًا، REQ-SUB-001)
+      x-traceability:
+        requirements:
+        - REQ-SUB-001
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PlanCreateRequest'
+      responses:
+        '201':
+          description: أُنشئت الخطة
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlanResponse'
+        '403':
+          description: ليس مدير نظام
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    get:
+      operationId: listSubscriptionPlans
+      summary: عرض كل خطط الاشتراك المتاحة
+      x-traceability:
+        requirements:
+        - REQ-SUB-002
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      responses:
+        '200':
+          description: قائمة الخطط
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/PlanResponse'
+  /api/v1/subscriptions:
+    post:
+      operationId: subscribeToPlan
+      summary: اشتراك البائع الحالي في خطة (REQ-SUB-002)
+      description: 'CR-014: كل بائع يملك اشتراك Free نشطًا دومًا افتراضيًا؛ الاشتراك في خطة مدفوعة أثناء
+        وجود Free فقط هو ترقية مسموحة دائمًا، وليس تعارضًا. 409 يقع فقط عند وجود خطة مدفوعة أخرى نشطة
+        وغير منتهية بالفعل.'
+      x-traceability:
+        requirements:
+        - REQ-SUB-002
+        decisions:
+        - مدة الاشتراك عبر duration_days، لا مصدر آخر لها
+        - 'CR-014: الترقية من Free لا تُعامَل كاشتراك مكرر'
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubscribeRequest'
+      responses:
+        '201':
+          description: تم الاشتراك
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubscriptionResponse'
+        '400':
+          description: مدة غير صالحة
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: يوجد اشتراك مدفوع نشط بالفعل
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/subscriptions/mine:
+    get:
+      operationId: getMySubscription
+      summary: عرض اشتراك المستخدم الحالي (Free دومًا كحد أدنى، CR-014)
+      description: 'CR-014: لا وجود لحالة "بلا اشتراك" من منظور الواجهة. أول استعلام لبائع لم يشترك قط
+        ينشئ له اشتراك Free تلقائيًا. انتهاء خطة مدفوعة (Lazy Check) يعيد البائع تلقائيًا لخطة Free بدل
+        حالة منتهية مسدودة؛ الحقل null يبقى ممكنًا نظريًا فقط دفاعيًا (بيئة لم تُطبَّق عليها 026).'
+      x-traceability:
+        requirements:
+        - REQ-SUB-004
+        decisions:
+        - 'CR-014: عضوية Free دائمة لكل بائع'
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      responses:
+        '200':
+          description: الاشتراك الفعال الحالي (Free كحد أدنى دومًا)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubscriptionResponse'
+  /api/v1/subscriptions/{subscriptionId}/change-plan:
+    post:
+      operationId: changeSubscriptionPlan
+      summary: تغيير خطة اشتراك قائم، يسري فورًا (صاحبه حصرًا، REQ-SUB-005/005-A)
+      x-traceability:
+        requirements:
+        - REQ-SUB-005
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: subscriptionId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChangePlanRequest'
+      responses:
+        '200':
+          description: تغيَّرت الخطة
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubscriptionResponse'
+        '403':
+          description: ليس صاحب الاشتراك
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: غير موجود
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: اشتراك غير نشط
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/content/articles:
+    post:
+      operationId: createArticle
+      summary: إنشاء مقال (محرر الأخبار حصريًا، REQ-CNT-001)
+      x-traceability:
+        requirements:
+        - REQ-CNT-001
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ArticleCreateRequest'
+      responses:
+        '201':
+          description: أُنشئ بحالة unpublished
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ArticleResponse'
+        '400':
+          description: حقل فارغ
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: ليس محرر أخبار
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    get:
+      operationId: listPublishedArticles
+      summary: عرض كل المقالات المنشورة (عام بالكامل)
+      x-traceability: &id001
+        requirements: []
+        decisions:
+        - CR-017
+        x-gap-note: 'Public Read Consistency — قوائم عامة كانت تقود لتفاصيل تتطلب جلسة بلا سبب Business
+          Rule موثَّق؛ عولجت هنا بمبدأ: Public List → Public Detail للكيانات المنشورة/المعتمدة/النشطة
+          فقط.'
+      security: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      responses:
+        '200':
+          description: المقالات المنشورة
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ArticleResponse'
+      description: 'CR-017: عام بالكامل، بلا جلسة — كانت تتطلب جلسة سابقًا بلا سبب موثَّق رغم أن الاستعلام
+        الداخلي مُصفًّى لمنشور فقط أصلًا.'
+  /api/v1/content/articles/{articleId}:
+    get:
+      operationId: getArticle
+      summary: 'عرض مقال بمعرّفه (Dual-mode: عام لمنشور، بجلسة لغيره)'
+      x-traceability: *id001
+      security: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: articleId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: بيانات المقال
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ArticleResponse'
+        '404':
+          description: غير موجود
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      description: 'CR-017: published → عام بالكامل، بلا جلسة. غير ذلك (unpublished) → بلا تغيير عن السلوك
+        السابق: يتطلب أي جلسة صالحة (401 لغيابها)، بلا فحص دور إضافي.'
+  /api/v1/content/articles/{articleId}/publish:
+    post:
+      operationId: publishArticle
+      summary: نشر مقال (محرر الأخبار حصريًا، REQ-CNT-002)
+      x-traceability:
+        requirements:
+        - REQ-CNT-002
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: articleId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: أصبح منشورًا
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ArticleResponse'
+        '403':
+          description: ليس محرر أخبار
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: غير موجود
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/content/articles/{articleId}/unpublish:
+    post:
+      operationId: unpublishArticle
+      summary: إلغاء نشر مقال (محرر الأخبار حصريًا، REQ-CNT-002)
+      x-traceability:
+        requirements:
+        - REQ-CNT-002
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: articleId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: أصبح غير منشور
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ArticleResponse'
+        '403':
+          description: ليس محرر أخبار
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: غير موجود
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/support/tickets:
+    post:
+      operationId: createSupportTicket
+      summary: إنشاء طلب دعم فني (أي مستخدم مسجَّل، REQ-SUP-001)
+      x-traceability:
+        requirements:
+        - REQ-SUP-001
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TicketCreateRequest'
+      responses:
+        '201':
+          description: أُنشئ بحالة open
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TicketResponse'
+        '400':
+          description: موضوع فارغ
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/support/tickets/mine:
+    get:
+      operationId: listMyTickets
+      summary: عرض طلبات الدعم الخاصة بالمستخدم الحالي
+      x-traceability:
+        requirements:
+        - REQ-SUP-001
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      responses:
+        '200':
+          description: قائمة الطلبات
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TicketResponse'
+  /api/v1/support/tickets/{ticketId}:
+    get:
+      operationId: getSupportTicket
+      summary: عرض طلب دعم (مقدِّم الطلب أو مشرف/مدير حصرًا)
+      x-traceability:
+        requirements:
+        - REQ-SUP-002
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: ticketId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: بيانات الطلب
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TicketResponse'
+        '403':
+          description: غير مصرَّح
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: غير موجود
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/support/tickets/{ticketId}/assign:
+    post:
+      operationId: assignSupportTicket
+      summary: إسناد طلب دعم لمشرف (مشرف الدعم أو مدير النظام حصريًا، REQ-SUP-003)
+      x-traceability:
+        requirements:
+        - REQ-SUP-003
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: ticketId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AssignRequest'
+      responses:
+        '200':
+          description: أصبحت الحالة in_progress
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TicketResponse'
+        '403':
+          description: ليس مشرفًا
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: غير موجود
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: انتقال حالة غير مسموح
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/support/tickets/{ticketId}/resolve:
+    post:
+      operationId: resolveSupportTicket
+      summary: حل طلب دعم (مشرف الدعم أو مدير النظام حصريًا)
+      x-traceability:
+        requirements:
+        - REQ-SUP-002
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: ticketId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: أصبح محلولًا
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TicketResponse'
+        '403':
+          description: ليس مشرفًا
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: غير موجود
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: انتقال حالة غير مسموح
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/support/tickets/{ticketId}/close:
+    post:
+      operationId: closeSupportTicket
+      summary: إغلاق طلب دعم؛ يبدأ عندها عدّاد مهلة إعادة الفتح (REQ-SUP-006)
+      x-traceability:
+        requirements:
+        - REQ-SUP-006
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: ticketId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: أصبح مغلَقًا
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TicketResponse'
+        '403':
+          description: غير مصرَّح
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: غير موجود
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: انتقال حالة غير مسموح
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/support/tickets/{ticketId}/reopen:
+    post:
+      operationId: reopenSupportTicket
+      summary: إعادة فتح طلب مغلَق خلال المهلة (مقدِّم الطلب حصرًا، REQ-SUP-006)
+      x-traceability:
+        requirements:
+        - REQ-SUP-006
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: ticketId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: أصبحت الحالة in_progress
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TicketResponse'
+        '403':
+          description: ليس مقدِّم الطلب
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: غير موجود
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: حالة غير مسموحة أو انقضت المهلة
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/support/tickets/{ticketId}/replies:
+    post:
+      operationId: addSupportTicketReply
+      summary: إضافة رد ضمن طلب الدعم (مقدِّم الطلب أو المشرف المسؤول، REQ-SUP-005)
+      x-traceability:
+        requirements:
+        - REQ-SUP-005
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: ticketId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReplyCreateRequest'
+      responses:
+        '201':
+          description: أُضيف الرد
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReplyResponse'
+        '400':
+          description: رد فارغ
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: غير مصرَّح
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: غير موجود
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    get:
+      operationId: listSupportTicketReplies
+      summary: عرض كل الردود ضمن طلب الدعم مرتَّبة زمنيًا (REQ-SUP-005)
+      x-traceability:
+        requirements:
+        - REQ-SUP-005
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: ticketId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: الردود
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ReplyResponse'
+        '403':
+          description: غير مصرَّح
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: غير موجود
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/ratings:
+    post:
+      operationId: createRating
+      summary: إنشاء تقييم (بائع/متجر/تجربة شراء) لصفقة أتمَّها المُقيِّم فعليًا
+      x-traceability:
+        requirements:
+        - REQ-TRM-001
+        - REQ-TRM-002
+        decisions:
+        - CR-009
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RatingCreateRequest'
+      responses:
+        '201':
+          description: أُنشئ التقييم
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RatingResponse'
+        '400':
+          description: نوع هدف أو درجة غير صالحة
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: غير مؤهَّل (لم يُتمّ الصفقة فعليًا)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: تقييم مكرَّر لنفس الهدف عن نفس الصفقة
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/ratings/{ratingId}:
+    patch:
+      operationId: updateRating
+      summary: تعديل درجة/تعليق تقييم (صاحبه حصرًا، قبل الأرشفة)
+      x-traceability:
+        requirements:
+        - REQ-TRM-003
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: ratingId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RatingUpdateRequest'
+      responses:
+        '200':
+          description: تحدَّث التقييم
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RatingResponse'
+        '403':
+          description: ليس صاحب التقييم
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: غير موجود
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: التقييم مؤرشَف
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/ratings/{ratingId}/archive:
+    post:
+      operationId: archiveRating
+      summary: أرشفة تقييم (صاحبه حصرًا، لا حذف فعلي)
+      x-traceability:
+        requirements:
+        - REQ-TRM-004
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: ratingId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: أصبح مؤرشَفًا
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RatingResponse'
+        '403':
+          description: ليس صاحب التقييم
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: غير موجود
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: مؤرشَف بالفعل
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/ratings/target/{targetType}/{targetRefId}/average:
+    get:
+      operationId: getAverageRating
+      summary: متوسط تقييم هدف معيَّن (Read Model)
+      x-traceability:
+        requirements:
+        - REQ-TRM-006
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: targetType
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: targetRefId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: المتوسط (أو null بلا تقييمات)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AverageScoreResponse'
+  /api/v1/admin/scheduled-jobs:
+    post:
+      operationId: createScheduledJob
+      summary: إنشاء مهمة مجدوَلة (مدير النظام حصريًا، أداة إدارية داخلية)
+      x-traceability:
+        requirements: []
+        decisions:
+        - ADR-035
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ScheduledJobCreateRequest'
+      responses:
+        '201':
+          description: أُنشئت المهمة
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScheduledJobResponse'
+        '400':
+          description: نوع مهمة أو قاعدة تكرار غير صالحة
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: ليس مدير نظام
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    get:
+      operationId: listScheduledJobs
+      summary: قائمة المهام المجدولة (مدير النظام حصريًا)
+      x-traceability: &id002
+        requirements: []
+        decisions:
+        - CR-015
+        x-gap-note: لا REQ سابق — احتياج Frontend Enablement جديد موثَّق تحت CR-015 نفسها.
+      security:
+      - sessionAuth: []
+      parameters:
+      - &id003
+        $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: status_filter
+        in: query
+        schema:
+          type: string
+      - name: page
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          default: 1
+      - name: page_size
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          default: 20
+      responses:
+        '200':
+          description: قائمة المهام المجدولة
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScheduledJobListResponse'
+        '403':
+          description: غير مدير نظام
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/admin/scheduled-jobs/{jobId}:
+    get:
+      operationId: getScheduledJob
+      summary: عرض مهمة مجدوَلة (مدير النظام حصريًا)
+      x-traceability:
+        requirements: []
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: jobId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: بيانات المهمة
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScheduledJobResponse'
+        '403':
+          description: ليس مدير نظام
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: غير موجودة
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/admin/scheduled-jobs/{jobId}/cancel:
+    post:
+      operationId: cancelScheduledJob
+      summary: إلغاء مهمة مجدوَلة (مدير النظام حصريًا)
+      x-traceability:
+        requirements: []
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: jobId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: أصبحت ملغاة
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScheduledJobResponse'
+        '403':
+          description: ليس مدير نظام
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: غير موجودة
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: انتقال حالة غير مسموح
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/reference-data/{refType}:
+    get:
+      operationId: listRefValues
+      summary: عرض القيم المرجعية النشطة لنوع معيَّن
+      x-traceability:
+        requirements:
+        - REQ-REF-003
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: refType
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: القيم النشطة
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/RefValueResponse'
+  /api/v1/reference-data:
+    post:
+      operationId: createRefValue
+      summary: إضافة قيمة مرجعية جديدة (مدير النظام حصريًا، REQ-REF-001)
+      x-traceability:
+        requirements:
+        - REQ-REF-001
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefValueCreateRequest'
+      responses:
+        '201':
+          description: أُضيفت القيمة
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RefValueResponse'
+        '400':
+          description: نوع أو رمز غير صالح
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: ليس مدير نظام
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: القيمة موجودة بالفعل لهذا النوع
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/reference-data/{valueId}/archive:
+    post:
+      operationId: archiveRefValue
+      summary: أرشفة قيمة مرجعية (مدير النظام حصريًا، لا حذف نهائي REQ-REF-002)
+      x-traceability:
+        requirements:
+        - REQ-REF-002
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: valueId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: أصبحت مؤرشَفة
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RefValueResponse'
+        '403':
+          description: ليس مدير نظام
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: غير موجودة
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: مؤرشَفة بالفعل
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/purchase-requests:
+    post:
+      operationId: createPurchaseRequest
+      summary: إنشاء طلب شراء لقطعة كتالوج معتمَدة (REQ-PUR-001/002)
+      x-traceability:
+        requirements:
+        - REQ-PUR-001
+        - REQ-PUR-002
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PurchaseRequestCreateRequest'
+      responses:
+        '201':
+          description: أُنشئ الطلب بحالة open
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurchaseRequestResponse'
+        '409':
+          description: قطعة الكتالوج غير معتمدة
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/purchase-requests/{prId}:
+    get:
+      operationId: getPurchaseRequest
+      summary: عرض طلب شراء بمعرّفه
+      x-traceability:
+        requirements:
+        - REQ-PUR-001
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: prId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: بيانات الطلب
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurchaseRequestResponse'
+        '404':
+          description: غير موجود
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/purchase-requests/{prId}/cancel:
+    post:
+      operationId: cancelPurchaseRequest
+      summary: إلغاء طلب شراء (المشتري صاحب الطلب حصرًا، REQ-PUR-009)
+      x-traceability:
+        requirements:
+        - REQ-PUR-009
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: prId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: أصبح ملغيًا
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurchaseRequestResponse'
+        '403':
+          description: ليس صاحب الطلب
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: غير موجود
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: انتقال حالة غير مسموح
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/offers/{offerId}/accept:
+    post:
+      operationId: acceptOffer
+      summary: قبول عرض سعر واحد؛ رفض بقية العروض تلقائيًا (REQ-PUR-013/014)
+      x-traceability:
+        requirements:
+        - REQ-PUR-013
+        - REQ-PUR-014
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: offerId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: أصبح الطلب fulfilled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurchaseRequestResponse'
+        '403':
+          description: ليس صاحب الطلب
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: غير موجود
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: حالة عرض غير صالحة للقبول
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/offers/{offerId}/withdraw:
+    post:
+      operationId: withdrawOffer
+      summary: سحب عرض سعر قبل قبوله (البائع صاحب العرض حصرًا، REQ-PUR-018)
+      x-traceability:
+        requirements:
+        - REQ-PUR-018
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: offerId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: أصبح مسحوبًا
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OfferResponse'
+        '403':
+          description: ليس صاحب العرض
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: غير موجود
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: العرض مقبول بالفعل؛ لا يجوز سحبه
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/messages:
+    post:
+      operationId: sendMessage
+      summary: إرسال رسالة ضمن سياق محدَّد (REQ-COM-001/002)
+      x-traceability:
+        requirements:
+        - REQ-COM-001
+        - REQ-COM-002
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MessageSendRequest'
+      responses:
+        '201':
+          description: أُرسلت الرسالة
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          description: سياق غير معروف أو محتوى فارغ
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/conversations/{conversationId}/messages:
+    get:
+      operationId: listConversationMessages
+      summary: عرض رسائل محادثة (الظاهرة لصاحب الجلسة فقط، REQ-COM-007)
+      x-traceability:
+        requirements:
+        - REQ-COM-002
+        - REQ-COM-007
+        decisions:
+        - لا إنفاذ عضوية طرفين صارم بعد؛ Backlog موثَّق في الكود
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: conversationId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: قائمة الرسائل الظاهرة
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/MessageResponse'
+  /api/v1/conversations/{conversationId}/messages/{messageId}:
+    delete:
+      operationId: deleteMessageForViewer
+      summary: حذف نسبي لرسالة من منظور صاحب الجلسة فقط (لا حذف فعلي، REQ-COM-007)
+      x-traceability:
+        requirements:
+        - REQ-COM-007
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: conversationId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: messageId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: حُذفت نسبيًا
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '404':
+          description: غير موجودة
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/messages/{messageId}/attachments:
+    post:
+      operationId: addMessageAttachment
+      summary: تسجيل بيانات مرفق وصفية لرسالة (لا رفع ملف فعلي، خارج النطاق)
+      x-traceability:
+        requirements: []
+        decisions:
+        - CR-007
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: messageId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AttachmentCreateRequest'
+      responses:
+        '201':
+          description: سُجِّل المرفق
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AttachmentResponse'
+        '400':
+          description: نوع/امتداد/حجم مرفوض أمنيًا
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/notifications/:
+    get:
+      operationId: listMyNotifications
+      summary: عرض إشعارات المستخدم الحالي (مركز الإشعارات فقط)
+      x-traceability:
+        requirements: []
+        decisions:
+        - إدارة الحملات (Campaign/Delivery/Template) مؤجَّلة عمدًا؛ راجع القسم الأخير
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      responses:
+        '200':
+          description: قائمة الإشعارات
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/NotificationResponse'
+  /api/v1/notifications/{entryId}/read:
+    post:
+      operationId: markNotificationRead
+      summary: تعليم إشعار كمقروء (يخص المستخدم الحالي حصرًا)
+      x-traceability:
+        requirements: []
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: entryId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: أصبح مقروءًا
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationResponse'
+        '404':
+          description: غير موجود أو لا يخص المستخدم الحالي
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/notifications/{entryId}/archive:
+    post:
+      operationId: archiveNotification
+      summary: أرشفة إشعار (يخص المستخدم الحالي حصرًا)
+      x-traceability:
+        requirements: []
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: entryId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: أصبح مؤرشَفًا
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationResponse'
+        '404':
+          description: غير موجود أو لا يخص المستخدم الحالي
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/store/stores:
+    post:
+      operationId: createStore
+      summary: إنشاء متجر (بديل يدوي مؤقَّت حتى ربط الإنشاء التلقائي بحدث تسجيل البائع، REQ-STR-001)
+      x-traceability:
+        requirements:
+        - REQ-STR-001
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StoreCreateRequest'
+      responses:
+        '201':
+          description: أُنشئ المتجر بحالة active
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StoreResponse'
+    get:
+      operationId: listStores
+      summary: قائمة المتاجر (استخدام إداري — لا Directory عام)
+      description: مقصور على مدير النظام أو المشرف (نفس نطاق صلاحية تغيير حالة المتجر). لا تفعيل لعرض
+        عام في هذه الـCR.
+      x-traceability: *id002
+      security:
+      - sessionAuth: []
+      parameters:
+      - *id003
+      - name: status_filter
+        in: query
+        schema:
+          type: string
+          enum:
+          - creating
+          - active
+          - suspended
+          - archived
+      - name: owner_ref_id
+        in: query
+        schema:
+          type: string
+          format: uuid
+      - name: page
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          default: 1
+      - name: page_size
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          default: 20
+      responses:
+        '200':
+          description: قائمة المتاجر
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StoreListResponse'
+        '403':
+          description: غير مدير نظام أو مشرف
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/store/stores/{storeId}:
+    get:
+      operationId: getStore
+      summary: 'عرض متجر بمعرّفه (Dual-mode: عام لـactive، كامل بجلسة)'
+      x-traceability: *id001
+      security: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: storeId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: بيانات المتجر (الشكل يعتمد على وجود جلسة — راجع الوصف)
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - $ref: '#/components/schemas/StoreResponse'
+                - $ref: '#/components/schemas/StorePublicResponse'
+        '404':
+          description: غير موجود
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      description: 'CR-017: جلسة موجودة → الاستجابة الكاملة كما كانت قبل CR-017 حرفيًا (StoreResponse،
+        بلا تغيير في أي شرط). لا جلسة → عام، مقصور على status=''active'' (404 لغيره)، StorePublicResponse
+        (بلا owner_user_ref_id).'
+  /api/v1/store/stores/{storeId}/status:
+    post:
+      operationId: updateStoreStatus
+      summary: تغيير حالة المتجر (مدير النظام أو المشرف فقط)
+      x-traceability:
+        requirements:
+        - REQ-STR-004
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: storeId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StoreStatusUpdateRequest'
+      responses:
+        '200':
+          description: تغيَّرت الحالة
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StoreResponse'
+        '403':
+          description: ليس مدير نظام أو مشرف (REQ-STR-004)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: غير موجود
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: انتقال حالة غير مسموح
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/store/stores/{storeId}/transfer-ownership:
+    post:
+      operationId: transferStoreOwnership
+      summary: نقل ملكية المتجر (مدير النظام حصريًا)
+      x-traceability:
+        requirements:
+        - REQ-STR-006
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: storeId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StoreTransferOwnershipRequest'
+      responses:
+        '200':
+          description: تم نقل الملكية
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StoreResponse'
+        '403':
+          description: ليس مدير نظام (REQ-STR-006)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: غير موجود
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/inventory/items/{itemId}:
+    get:
+      operationId: getInventoryItem
+      summary: عرض عنصر مخزون كاملًا بمعرّفه
+      x-traceability:
+        requirements:
+        - REQ-STR-009
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: itemId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: بيانات العنصر
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InventoryItemFullResponse'
+        '404':
+          description: غير موجود
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/inventory/items/{itemId}/quantity:
+    patch:
+      operationId: updateInventoryItemQuantity
+      summary: تحديث كمية عنصر مخزون (البائع المالك فقط، REQ-STR-019)
+      x-traceability:
+        requirements:
+        - REQ-STR-016
+        - REQ-STR-017
+        - REQ-STR-019
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: itemId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/QuantityUpdateRequest'
+      responses:
+        '200':
+          description: تحدَّثت الكمية (وربما الحالة تلقائيًا)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InventoryItemFullResponse'
+        '403':
+          description: ليس البائع المالك (REQ-STR-019)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: غير موجود
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: العنصر مؤرشَف، لا تعديل مسموح
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/inventory/items/{itemId}/pricing:
+    patch:
+      operationId: updateInventoryItemPricing
+      summary: تحديث سياسة تسعير عنصر مخزون (البائع المالك فقط، REQ-STR-019)
+      x-traceability:
+        requirements:
+        - REQ-STR-012
+        - REQ-STR-019
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: itemId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PricingUpdateRequest'
+      responses:
+        '200':
+          description: تحدَّثت السياسة
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InventoryItemFullResponse'
+        '400':
+          description: سياسة تسعير غير صالحة
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: ليس البائع المالك
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: العنصر مؤرشَف
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/inventory/items/{itemId}/hide:
+    post:
+      operationId: hideInventoryItem
+      summary: إخفاء عنصر مخزون (البائع المالك فقط)
+      x-traceability:
+        requirements:
+        - REQ-STR-017
+        - REQ-STR-019
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: itemId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: أصبح مخفيًا
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InventoryItemFullResponse'
+        '403':
+          description: ليس البائع المالك
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: العنصر مؤرشَف
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/inventory/items/{itemId}/unhide:
+    post:
+      operationId: unhideInventoryItem
+      summary: إظهار عنصر مخزون مخفي (البائع المالك فقط)
+      x-traceability:
+        requirements:
+        - REQ-STR-017
+        - REQ-STR-019
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: itemId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: أصبح ظاهرًا من جديد
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InventoryItemFullResponse'
+        '403':
+          description: ليس البائع المالك
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/inventory/items/{itemId}/archive:
+    post:
+      operationId: archiveInventoryItem
+      summary: أرشفة عنصر مخزون (Soft Delete، البائع المالك فقط)
+      x-traceability:
+        requirements:
+        - REQ-STR-019
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: itemId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: أصبح مؤرشَفًا
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InventoryItemFullResponse'
+        '403':
+          description: ليس البائع المالك
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: مؤرشَف بالفعل
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/cmp/records:
+    post:
+      operationId: createCompatibilityRecord
+      summary: إنشاء سجل توافق بين قطعة كتالوج معتمَدة وفئة سيارة صالحة (مدير النظام فقط)
+      x-traceability:
+        requirements:
+        - REQ-CMP-001
+        - REQ-CMP-002
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CompatibilityRecordCreateRequest'
+      responses:
+        '201':
+          description: أُنشئ السجل بحالة active
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompatibilityRecordResponse'
+        '401':
+          description: لا جلسة صالحة
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: ليس مدير نظام (REQ-CMP-001)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: قطعة غير معتمَدة، أو فئة سيارة غير صالحة، أو زوج مكرَّر (REQ-CMP-002)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/cmp/records/{recordId}:
+    get:
+      operationId: getCompatibilityRecord
+      summary: عرض سجل توافق بمعرّفه
+      x-traceability:
+        requirements:
+        - REQ-CMP-001
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: recordId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: بيانات السجل
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompatibilityRecordResponse'
+        '404':
+          description: غير موجود
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/cmp/parts/{partId}/records:
+    get:
+      operationId: listCompatibilityRecordsForPart
+      summary: عرض كل سجلات التوافق لقطعة كتالوج معيّنة
+      x-traceability:
+        requirements:
+        - REQ-CMP-001
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: partId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: قائمة سجلات التوافق (قد تكون فارغة)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/CompatibilityRecordResponse'
+  /api/v1/cmp/records/{recordId}/archive:
+    post:
+      operationId: archiveCompatibilityRecord
+      summary: أرشفة سجل توافق يدويًا (مدير النظام فقط)
+      x-traceability:
+        requirements:
+        - REQ-CMP-003
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: recordId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: أصبح السجل مؤرشَفًا
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompatibilityRecordResponse'
+        '403':
+          description: ليس مدير نظام (REQ-CMP-003)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: غير موجود
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: انتقال حالة غير مسموح (مؤرشَف بالفعل)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/vct/manufacturers:
+    post:
+      operationId: proposeManufacturer
+      summary: اقتراح شركة مصنّعة جديدة
+      x-traceability:
+        requirements:
+        - REQ-VCT-001
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      responses:
+        '201':
+          description: أُنشئت بحالة proposed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ManufacturerResponse'
+        '401':
+          description: لا جلسة صالحة
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/vct/manufacturers/{manufacturerId}:
+    get:
+      operationId: getManufacturer
+      summary: عرض شركة مصنّعة بمعرّفها
+      x-traceability:
+        requirements:
+        - REQ-VCT-001
+        - REQ-VCT-002
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: manufacturerId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: بيانات الشركة
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ManufacturerResponse'
+        '404':
+          description: غير موجودة
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/vct/manufacturers/{manufacturerId}/approve:
+    post:
+      operationId: approveManufacturer
+      summary: اعتماد شركة مصنّعة (مدير النظام فقط)
+      x-traceability:
+        requirements:
+        - REQ-VCT-002
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: manufacturerId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: أصبحت معتمَدة
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ManufacturerResponse'
+        '401':
+          description: لا جلسة صالحة
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: ليس مدير نظام (super_admin/admin فقط)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: غير موجودة
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: انتقال حالة غير مسموح
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/vct/manufacturers/{manufacturerId}/models:
+    post:
+      operationId: proposeModel
+      summary: اقتراح موديل تحت شركة مصنّعة معتمَدة
+      x-traceability:
+        requirements:
+        - REQ-VCT-003
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: manufacturerId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '201':
+          description: أُنشئ الموديل
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelResponse'
+        '404':
+          description: الشركة المصنّعة غير موجودة
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: الشركة المصنّعة غير معتمَدة بعد (REQ-VCT-003)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/vct/models/{modelId}/generations:
+    post:
+      operationId: createGeneration
+      summary: إضافة جيل تحت موديل
+      x-traceability:
+        requirements:
+        - REQ-VCT-004
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: modelId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '201':
+          description: أُنشئ الجيل
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenerationResponse'
+        '404':
+          description: الموديل غير موجود
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/vct/generations/{generationId}:
+    get:
+      operationId: getGeneration
+      summary: 'Batch 1: عرض جيل بمعرّفه (يشمل start_year/end_year الوصفيين)'
+      x-traceability:
+        requirements: []
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: generationId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: بيانات الجيل
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenerationResponse'
+        '404':
+          description: غير موجود
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/vct/generations/{generationId}/year-range:
+    post:
+      operationId: updateGenerationYearRange
+      summary: 'Batch 1 §2، §4: تحديث نطاق سنوات الجيل الوصفي (start_year/end_year)'
+      description: >-
+        وصفي فقط — ليس مصدر الحقيقة النهائي للتوافق. يُرفَض إذا كان
+        التحديث سيُخرج أي Trim Model Year موجودة فعليًا خارج النطاق الجديد.
+      x-traceability:
+        requirements: []
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: generationId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenerationYearRangeUpdateRequest'
+      responses:
+        '200':
+          description: تحديث ناجح
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenerationResponse'
+        '404':
+          description: الجيل غير موجود
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: 'YEAR_RANGE_CONFLICTS_WITH_EXISTING_MODEL_YEARS — سيُخرج سنة موديل موجودة فعليًا خارج النطاق'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '400':
+          description: INVALID_YEAR_RANGE
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/vct/generations/{generationId}/trims:
+    post:
+      operationId: createTrim
+      summary: إضافة فئة سيارة تحت جيل (نوع الوقود وناقل الحركة)
+      x-traceability:
+        requirements:
+        - REQ-VCT-005
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: generationId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TrimCreateRequest'
+      responses:
+        '201':
+          description: أُنشئت الفئة
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrimResponse'
+        '404':
+          description: الجيل غير موجود
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/vct/trims/{trimId}:
+    get:
+      operationId: getTrim
+      summary: عرض فئة سيارة بمعرّفها (نقطة التحقق التي تستهلكها CMP)
+      x-traceability:
+        requirements:
+        - REQ-VCT-005
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: trimId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: بيانات الفئة
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrimResponse'
+        '404':
+          description: غير موجودة
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/vct/trims/{trimId}/model-years:
+    post:
+      operationId: createTrimModelYear
+      summary: 'Batch 1 §3-4: إضافة سنة موديل محدَّدة لفئة سيارة'
+      x-traceability:
+        requirements: []
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: trimId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TrimModelYearCreateRequest'
+      responses:
+        '201':
+          description: أُنشئت سنة الموديل
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrimModelYearResponse'
+        '404':
+          description: TRIM_NOT_FOUND
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: YEAR_OUT_OF_GENERATION_RANGE أو DUPLICATE_TRIM_MODEL_YEAR
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    get:
+      operationId: listTrimModelYears
+      summary: 'Batch 1: قائمة سنوات الموديل لفئة سيارة'
+      x-traceability:
+        requirements: []
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: trimId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: قائمة سنوات الموديل
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TrimModelYearResponse'
+  /api/v1/vct/trims/{trimId}/market-availability:
+    post:
+      operationId: addTrimMarketAvailability
+      summary: 'Batch 1 §6-9: إضافة إتاحة سوق على مستوى الفئة (Trim-level)'
+      x-traceability:
+        requirements: []
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: trimId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MarketAvailabilityCreateRequest'
+      responses:
+        '201':
+          description: أُضيفت الإتاحة
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MarketAvailabilityResponse'
+        '404':
+          description: TRIM_NOT_FOUND
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '400':
+          description: INVALID_MARKET_AVAILABILITY_TARGET
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: 'MARKET_AVAILABILITY_LEVEL_CONFLICT — تعايش Trim-level/Year-specific لنفس الفئة'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    get:
+      operationId: listTrimMarketAvailability
+      summary: 'Batch 1: قائمة صفوف إتاحة السوق على مستوى الفئة (Trim-level)'
+      x-traceability:
+        requirements: []
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: trimId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: قائمة الإتاحة
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/MarketAvailabilityResponse'
+  /api/v1/vct/trim-model-years/{trimModelYearId}/market-availability:
+    post:
+      operationId: addTrimModelYearMarketAvailability
+      summary: 'Batch 1 §6-9: إضافة إتاحة سوق على مستوى سنة موديل محدَّدة (Year-specific)'
+      x-traceability:
+        requirements: []
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: trimModelYearId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MarketAvailabilityCreateRequest'
+      responses:
+        '201':
+          description: أُضيفت الإتاحة
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MarketAvailabilityResponse'
+        '404':
+          description: TRIM_MODEL_YEAR_NOT_FOUND
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '400':
+          description: INVALID_MARKET_AVAILABILITY_TARGET
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: 'MARKET_AVAILABILITY_LEVEL_CONFLICT — تعايش Trim-level/Year-specific لنفس الفئة'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/pct/parts:
+    post:
+      operationId: proposeCatalogPart
+      summary: تقديم طلب إضافة قطعة جديدة للكتالوج
+      x-traceability:
+        requirements:
+        - REQ-PCT-001
+        - REQ-PCT-007
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CatalogPartCreateRequest'
+      responses:
+        '201':
+          description: أُنشئت القطعة بحالة proposed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CatalogPartResponse'
+        '401':
+          description: لا جلسة صالحة
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: category_id غير موجود (FK)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    get:
+      operationId: listCatalogParts
+      summary: قائمة قطع الكتالوج — تصفح عام لـapproved، طابور اعتماد proposed/archived حسب الصلاحية
+      description: 'status_filter افتراضيًا (أو ''approved'' صراحة): قراءة عامة، لا جلسة. أي حالة أخرى
+        (proposed/archived): يتطلب جلسة صالحة + دور super_admin/admin (نفس صلاحية /parts/{id}/approve)
+        — 401 لغياب الجلسة، 403 لجلسة بلا الدور المطلوب.'
+      x-traceability: *id002
+      security: []
+      parameters:
+      - *id003
+      - name: status_filter
+        in: query
+        schema:
+          type: string
+          enum:
+          - proposed
+          - approved
+          - archived
+          default: approved
+      - name: q
+        in: query
+        schema:
+          type: string
+      - name: page
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          default: 1
+      - name: page_size
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          default: 20
+      responses:
+        '200':
+          description: قطع الكتالوج حسب الحالة والصلاحية
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CatalogPartListResponse'
+        '401':
+          description: طلب status_filter غير approved بلا جلسة
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: جلسة صالحة بلا دور اعتماد كتالوج
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/pct/parts/{partId}:
+    get:
+      operationId: getCatalogPart
+      summary: 'عرض تفاصيل قطعة كتالوج بمعرّفها (Dual-mode: عام لـapproved، بجلسة لغيره)'
+      x-traceability: *id001
+      security: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: partId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: بيانات القطعة
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CatalogPartResponse'
+        '404':
+          description: غير موجودة
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      description: 'CR-017: approved → عام بالكامل، بلا جلسة. غير ذلك (proposed/archived) → بلا تغيير
+        عن السلوك السابق: يتطلب أي جلسة صالحة (401 لغيابها)، بلا فحص دور إضافي — لم نُقيِّد هذا المسار
+        أكثر مما كان.'
+  /api/v1/pct/parts/{partId}/approve:
+    post:
+      operationId: approveCatalogPart
+      summary: اعتماد قطعة كتالوج (proposed → approved)
+      x-traceability:
+        requirements:
+        - REQ-PCT-002
+        decisions:
+        - يستوجب تحديد آلية تفويض دور مدير النظام قبل التنفيذ — انظر ملاحظة الصلاحيات
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: partId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: أصبحت القطعة معتمَدة
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CatalogPartResponse'
+        '401':
+          description: لا جلسة صالحة
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: لا صلاحية اعتماد (مدير نظام فقط، REQ-PCT-002)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: غير موجودة
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: انتقال حالة غير مسموح (InvalidCatalogPartStatusError)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/pct/parts/{partId}/names:
+    post:
+      operationId: addCatalogPartLocalizedName
+      summary: إضافة اسم (قياسي/محلي/إنجليزي/مرادف) لقطعة كتالوج
+      x-traceability:
+        requirements:
+        - REQ-PCT-003
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: partId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LocalizedNameCreateRequest'
+      responses:
+        '201':
+          description: أُضيف الاسم
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LocalizedNameResponse'
+        '400':
+          description: قيمة اسم فارغة أو نوع اسم غير معروف
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: القطعة غير موجودة
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/pct/parts/{partId}/oem-numbers:
+    post:
+      operationId: addCatalogPartOemNumber
+      summary: تسجيل رقم OEM لقطعة كتالوج
+      x-traceability:
+        requirements:
+        - REQ-PCT-004
+        - REQ-PCT-005
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: partId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OemNumberCreateRequest'
+      responses:
+        '201':
+          description: أُضيف رقم OEM
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OemNumberResponse'
+        '404':
+          description: القطعة غير موجودة
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: رقم OEM مكرَّر لنفس الشركة المصنِّعة (REQ-PCT-005، DuplicateOemNumberError)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/auth/logout:
+    post:
+      operationId: authLogout
+      summary: تسجيل خروج المستخدم وإلغاء الجلسة فورًا
+      x-traceability:
+        requirements:
+        - REQ-SEC-005
+        - REQ-AUD-005
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      responses:
+        '200':
+          description: تم تسجيل الخروج وإلغاء الجلسة
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogoutResponse'
+        '401':
+          description: لا جلسة نشطة أصلاً
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/auth/identities:
+    get:
+      operationId: listMyIdentities
+      summary: عرض وسائل الهوية المرتبطة بحساب المستخدم الحالي
+      x-traceability:
+        requirements:
+        - REQ-IAM-016
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      responses:
+        '200':
+          description: قائمة وسائل الهوية المرتبطة
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IdentityListResponse'
+        '401':
+          description: لا جلسة صالحة
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    post:
+      operationId: addMyIdentity
+      summary: ربط وسيلة هوية إضافية بالحساب الحالي
+      x-traceability:
+        requirements:
+        - REQ-IAM-015
+        - REQ-IAM-017
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IdentityAddRequest'
+      responses:
+        '201':
+          description: تم ربط وسيلة الهوية بنجاح
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IdentityAddResponse'
+        '400':
+          description: وسيلة هوية معطَّلة إداريًا (ProviderDisabledError)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: لا جلسة صالحة
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: الوسيلة مرتبطة بالفعل بحساب (نفس المستخدم أو آخر) — DuplicateIdentityError
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/auth/identities/{identityId}:
+    delete:
+      operationId: removeMyIdentity
+      summary: إزالة وسيلة هوية من الحساب الحالي
+      x-traceability:
+        requirements:
+        - REQ-IAM-016
+        - REQ-IAM-017
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: identityId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '204':
+          description: تمت إزالة وسيلة الهوية بنجاح
+        '401':
+          description: لا جلسة صالحة
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: وسيلة الهوية غير موجودة لهذا الحساب
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: محاولة إزالة آخر وسيلة هوية متبقية — LastIdentityRemovalError (REQ-IAM-016)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/auth/providers:
+    get:
+      operationId: listEnabledProviders
+      summary: عرض وسائل الهوية المتاحة حاليًا للتسجيل/الدخول
+      x-traceability:
+        requirements:
+        - REQ-IAM-013
+        decisions: []
+      security: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      responses:
+        '200':
+          description: قائمة الوسائل المفعَّلة إداريًا فقط (is_enabled=true)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProviderListResponse'
+  /api/v1/auth/login:
+    post:
+      operationId: authLogin
+      summary: تسجيل دخول المستخدم
+      x-traceability:
+        requirements:
+        - REQ-IAM-003
+        - REQ-SEC-004
+        - REQ-SEC-007
+        decisions: []
+      security: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: نجاح تسجيل الدخول
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+        '401':
+          description: 'بيانات اعتماد غير صحيحة (error_code=INVALID_CREDENTIALS) — رسالة موحَّدة واحدة
+            دائمًا لكل من: هوية غير موجودة، كلمة مرور خاطئة، حساب موقوف/محظور، أو مزوّد email_password
+            معطَّل إداريًا؛ عمدًا بلا تمييز بينها لمنع تعداد الحسابات (تعديل CR-013 v2). تجاوز حد المحاولات
+            المتكررة (REQ-SEC-007) لم يُنفَّذ بعد ضمن هذا الـIncrement.
+
+            '
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/inventory-items:
+    post:
+      operationId: createInventoryItem
+      summary: إنشاء عنصر مخزون بالإشارة لقطعة كتالوج معتمدة
+      x-traceability:
+        requirements:
+        - REQ-STR-009
+        - REQ-STR-012
+        - REQ-STR-017
+        - REQ-STR-020
+        - REQ-STR-021
+        decisions:
+        - ADR-011
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: Idempotency-Key
+        in: header
+        required: true
+        description: 'مطلوب (required) لهذه العملية تحديدًا (DD الحزمة 2، القسم 2.2)؛ إعادة إرسال نفس
+          الطلب بنفس المفتاح تُعيد النتيجة الأصلية دون إنشاء عنصر مخزون مكرَّر (Migration 025، sys.idempotency_keys).
+
+          '
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InventoryItemCreateRequest'
+      responses:
+        '201':
+          description: تم إنشاء عنصر المخزون بنجاح
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InventoryItemCreateResponse'
+        '400':
+          description: سياسة تسعير غير صالحة، أو كمية سالبة (error_code=INVALID_PRICING/INVALID_QUANTITY)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: لا متجر نشط مملوك لهذا المستخدم (error_code=STORE_NOT_ACTIVE_OR_NOT_OWNED)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: قطعة الكتالوج غير معتمدة (error_code=PART_NOT_APPROVED)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/purchase-requests/{requestId}/offers:
+    post:
+      operationId: submitOffer
+      summary: تقديم عرض سعر بائع على طلب شراء قائم
+      x-traceability:
+        requirements:
+        - REQ-PUR-011
+        - REQ-PUR-016
+        decisions:
+        - CR-002
+      security:
+      - sessionAuth: []
+      parameters:
+      - name: requestId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - $ref: '#/components/parameters/IdempotencyKeyHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OfferSubmitRequest'
+      responses:
+        '201':
+          description: تم تقديم العرض بنجاح
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OfferSubmitResponse'
+        '409':
+          description: طلب الشراء مغلق أو منتهي الصلاحية، أو يوجد عرض نشط سابق لنفس البائع
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: البائع غير مؤهَّل لهذا الطلب
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/search/parts:
+    get:
+      operationId: searchParts
+      summary: البحث عن عناصر مخزون متوافقة مع معايير محددة
+      description: 'نقطة الوصول الوحيدة لخدمة البحث في كامل النظام؛ يُعاد استخدام العملية نفسها بلا أي
+        تفريع عبر أربعة سياقات واجهة مستخدم مختلفة (تصميم إعادة استخدام، لا تغيير في المتطلبات أو منطق
+        البحث): الصفحة الرئيسية (نموذج بحث كامل)، صفحة نتائج البحث (نفس النموذج مع الاحتفاظ بالفلاتر المختارة)،
+        صفحة تفاصيل المنتج (نموذج مبسَّط أو "بحث مشابه" بتعبئة مسبقة من جهة العميل لمعاملات كـtrim_ref_id
+        وcondition_ref_id)، وصفحة المتجر (نفس النموذج مع تمرير store_ref_id تلقائيًا). أي حقل مرجعي لم
+        يحدِّده المستهلك يعني عدم تطبيق ذلك الفلتر (REQ-SRC-010) — لا تُرسَل قيمة "all" حرفية أبدًا.
+
+        '
+      x-traceability:
+        requirements:
+        - REQ-SRC-001
+        - REQ-SRC-003
+        - REQ-SRC-004
+        - REQ-SRC-006
+        - REQ-SRC-006-C
+        - REQ-SRC-006-D
+        - REQ-SRC-006-E
+        - REQ-SRC-007
+        - REQ-SRC-007-A
+        - REQ-SRC-010
+        - REQ-SRC-011
+        - REQ-SRC-013
+        decisions:
+        - CR-004
+        - CR-006
+      security: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: q
+        in: query
+        schema:
+          type: string
+        description: >-
+          CR-020 (v1): نص بحث حر، يُطابَق Exact أو Prefix فقط (بعد تطبيع
+          عربي آمن: توحيد أشكال الألف، إزالة التشكيل/التطويل، توحيد
+          المسافات وحالة الأحرف اللاتينية) عبر أسماء القطعة الأربعة
+          (canonical/local/english/synonym). بلا Fuzzy/Substring matching
+          وبلا فهرسة pg_trgm/GIN في هذا الإصدار. غيابه أو فراغه = بلا تصفية.
+      - name: trim_ref_id
+        in: query
+        schema:
+          type: string
+          format: uuid
+        description: غيابه يعني عدم التصفية بفئة سيارة محددة (REQ-SRC-010)، لا قيمة "الكل" مرسَلة
+      - name: year
+        in: query
+        schema:
+          type: integer
+        description: >-
+          Approved VCT Design Baseline §18 (Batch 1): سنة موديل محدَّدة ضمن
+          trim_ref_id. بلا trim_ref_id لا معنى له. غيابه مع وجود trim_ref_id
+          يعني: General أو أي Year-specific تحت نفس الفئة (أي سنة). وجوده
+          يُضيِّق المطابقة إلى General أو Year-specific لنفس (الفئة، السنة) فقط.
+      - name: price_filter
+        in: query
+        schema:
+          type: string
+          enum:
+          - all
+          - priced_only
+          - unpriced_only
+        description: يبقى تصنيفًا ثلاثيًا كما هو (REQ-SRC-004)؛ لم يتأثر بـCR-006
+      - name: condition_ref_id
+        in: query
+        schema:
+          type: string
+          format: uuid
+        description: غيابه يعني عدم التصفية بحالة قطعة محددة (REQ-SRC-010)
+      - name: verified_sellers_only
+        in: query
+        schema:
+          type: boolean
+        description: >-
+          Deferred: العمود البنيوي (iam.users.is_verified_seller) موجود،
+          لكن لا Seller Verification Workflow حقيقية بعد تُسنِد هذه الحالة
+          فعليًا لأي بائع. المعامل مقبول ويعمل منطقيًا إن استُخدِم، لكنه
+          غير معروض في أي واجهة Frontend حتى اعتماد تلك الـWorkflow ضمن
+          Baseline لاحق — تفعيله في الواجهة الآن سينتج نتائج مضلِّلة (فارغة
+          دائمًا عمليًا).
+      - name: country_ref_id
+        in: query
+        required: false
+        description: 'اختياري؛ عند غيابه يُحدَّد تلقائيًا من جهة الخادم وفق ترتيب الحساب ثم الموقع الجغرافي
+          ثم IP (REQ-SRC-006-C)، أو دون تصفية جغرافية إن تعذَّر الاكتشاف (REQ-SRC-006-E).
+
+          '
+        schema:
+          type: string
+          format: uuid
+      - name: city_ref_id
+        in: query
+        schema:
+          type: string
+          format: uuid
+      - name: store_ref_id
+        in: query
+        required: false
+        description: 'اختياري؛ يُستخدَم عند إعادة استخدام مكوّن البحث ضمن سياق صفحة متجر محدد، لتقييد
+          النتائج على عناصر ذلك المتجر فقط.
+
+          '
+        schema:
+          type: string
+          format: uuid
+      - name: page
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          default: 1
+      - name: page_size
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          default: 20
+      - name: sort
+        in: query
+        schema:
+          type: string
+        description: بصيغة <حقل>:<asc|desc>؛ افتراضيًا وفق سياسة الترتيب المعتمدة؛ آخر قيمة يستخدمها العضو
+          المسجَّل تُحفَظ وتُقتَرح تلقائيًا لاحقًا (REQ-SRC-013)
+      responses:
+        '200':
+          description: نتائج البحث
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchResponse'
+        '400':
+          description: معيار تصفية غير صالح (قيمة مرجعية غير موجودة)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/reference-data/{type}/bulk-import/preview:
+    post:
+      operationId: previewBulkImport
+      summary: معاينة نتيجة استيراد جماعي لملف بيانات مرجعية قبل تأكيده
+      x-traceability:
+        requirements:
+        - REQ-REF-004
+        - REQ-REF-005
+        - REQ-REF-006
+        decisions:
+        - CR-003
+      parameters:
+      - name: type
+        in: path
+        required: true
+        schema:
+          type: string
+          enum:
+          - country
+          - city
+          - language
+          - fuel_type
+          - transmission_type
+          - engine_type
+          - part_condition
+          - subscription_type
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+              - file
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: ملف .xlsx فقط
+      responses:
+        '200':
+          description: نتيجة المعاينة
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BulkImportPreviewResponse'
+        '403':
+          description: صلاحية غير كافية (يتطلب مدير النظام أو مفوَّضًا مماثلاً)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: صيغة ملف غير مدعومة أو نوع بيانات مرجعية غير مدعوم بالاستيراد الجماعي
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/purchase-requests/mine:
+    get:
+      operationId: listMyPurchaseRequests
+      summary: قائمة طلبات الشراء الخاصة بالمستخدم الحالي
+      x-traceability: *id002
+      security:
+      - sessionAuth: []
+      parameters:
+      - *id003
+      - name: status_filter
+        in: query
+        schema:
+          type: string
+      - name: page
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          default: 1
+      - name: page_size
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          default: 20
+      responses:
+        '200':
+          description: طلبات الشراء الخاصة بالمستخدم
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurchaseRequestListResponse'
+  /api/v1/purchase-requests/{prId}/offers:
+    get:
+      operationId: listPurchaseRequestOffers
+      summary: قائمة العروض على طلب شراء محدد (النطاق حسب صلاحية الطالب)
+      description: 'صاحب طلب الشراء يرى كل العروض؛ بائع (يملك متجرًا) يرى عرضه هو فقط. غير ذلك: 403.'
+      x-traceability: *id002
+      security:
+      - sessionAuth: []
+      parameters:
+      - *id003
+      - name: prId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: status_filter
+        in: query
+        schema:
+          type: string
+      - name: page
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          default: 1
+      - name: page_size
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          default: 20
+      responses:
+        '200':
+          description: العروض المرتبطة بطلب الشراء (مصفّاة حسب صلاحية الطالب)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OfferListResponse'
+        '403':
+          description: لا صلة للطالب بطلب الشراء هذا لا كصاحب ولا كبائع
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: طلب الشراء غير موجود
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/purchase-requests/{prId}/offers/display:
+    get:
+      operationId: listPurchaseRequestOffersDisplay
+      summary: 'Batch 1 (Offers Integration): نفس قائمة العروض أعلاه مع سياق الطلب المحلول بالكامل'
+      description: >-
+        نفس Scoping تمامًا (صاحب الطلب يرى كل العروض؛ بائع يرى عرضه فقط)،
+        لكن كل عرض يحمل اسم القطعة/الفئة/الجيل/السنة/الحالة/ملاحظات
+        المشتري محلولة مباشرة (بلا Raw IDs حيث يوجد اسم حقيقي). بلا صور
+        (Media Foundation ضمن Batch 2).
+      x-traceability: *id002
+      security:
+      - sessionAuth: []
+      parameters:
+      - *id003
+      - name: prId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: status_filter
+        in: query
+        schema:
+          type: string
+      - name: page
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          default: 1
+      - name: page_size
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          default: 20
+      responses:
+        '200':
+          description: العروض مع سياق الطلب المحلول (مصفّاة حسب صلاحية الطالب)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OfferDisplayListResponse'
+        '403':
+          description: لا صلة للطالب بطلب الشراء هذا لا كصاحب ولا كبائع
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: طلب الشراء غير موجود
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/inventory/items/mine:
+    get:
+      operationId: listMyInventoryItems
+      summary: قائمة عناصر مخزون متجر البائع الحالي (مالك المتجر فقط، كل الحقول)
+      x-traceability: *id002
+      security:
+      - sessionAuth: []
+      parameters:
+      - *id003
+      - name: status_filter
+        in: query
+        schema:
+          type: string
+          enum:
+          - active
+          - out_of_stock
+          - hidden
+          - archived
+      - name: page
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          default: 1
+      - name: page_size
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          default: 20
+      responses:
+        '200':
+          description: عناصر مخزون البائع الحالي (شاملة hidden/archived)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InventoryItemListResponse'
+        '403':
+          description: لا يوجد متجر مملوك لهذا المستخدم
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/store/stores/{storeId}/inventory-items:
+    get:
+      operationId: listStorePublicInventoryItems
+      summary: عناصر مخزون متجر معيّن — عرض عام محدود الحقول (لصفحة المتجر)
+      description: لا يُعيد أبدًا عناصر بحالة hidden أو archived. Schema منفصل تمامًا عن عرض المالك.
+      x-traceability: *id002
+      security: []
+      parameters:
+      - *id003
+      - name: storeId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: page
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          default: 1
+      - name: page_size
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          default: 20
+      responses:
+        '200':
+          description: عناصر المخزون المتاحة للعرض العام لهذا المتجر
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InventoryItemPublicListResponse'
+  /api/v1/conversations:
+    get:
+      operationId: listMyConversations
+      summary: قائمة محادثات المستخدم الحالي (Inbox)
+      description: يعتمد على 027_com_conversation_participants.sql (عضوية صريحة). لا unread_count (راجع
+        وصف ConversationSummaryResponse).
+      x-traceability: *id002
+      security:
+      - sessionAuth: []
+      parameters:
+      - *id003
+      - name: page
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          default: 1
+      - name: page_size
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          default: 20
+      responses:
+        '200':
+          description: محادثات المستخدم الحالي
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConversationListResponse'
+  /api/v1/auth/me:
+    get:
+      operationId: getCurrentSession
+      summary: بيانات المستخدم/الجلسة الحالية (Session Introspection)
+      description: Session صالحة → 200 مع user_id/primary_role/account_status المقروءة فعليًا الآن من
+        iam.users (لا قيمة محفوظة وقت Login). Session غائبة/غير صالحة/منتهية → 401. لا يكشف الجلسة نفسها
+        ولا أي بيانات اعتماد.
+      x-traceability:
+        requirements: []
+        decisions:
+        - CR-016
+        x-gap-note: لا REQ سابق — فجوة Session Introspection اكتُشفت أثناء بدء دفعات Frontend (لا GET
+          /auth/me ولا user_id في LoginResponse)، موثَّقة تحت CR-016 المستقلة.
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      responses:
+        '200':
+          description: بيانات المستخدم الحالي
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MeResponse'
+        '401':
+          description: لا جلسة صالحة
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/inventory/items/{itemId}/public:
+    get:
+      operationId: getInventoryItemPublic
+      summary: تفاصيل عنصر مخزون منفرد للعموم (موسَّعة — CR-019)
+      description: 'CR-017 (الأساس، عام بلا جلسة، يستبعد hidden/archived) + CR-019 (توسيع الحقول عبر استعلام
+        JOIN مخصَّص، لا تغيير على مسار المالك): store_id حقيقي من العمود المباشر، part_name من pct.localized_names،
+        condition_code من ref.ref_values.code. لا store_name، لا صورة (فجوتان مسجَّلتان مستقلتان: GAP-A،
+        GAP-B).'
+      x-traceability:
+        requirements: []
+        decisions:
+        - CR-017
+        - CR-019
+        x-gap-note: توسيع حقول CR-019 فوق أساس CR-017 — لا REQ سابق، لا Migration.
+      security: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: itemId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: تفاصيل عنصر المخزون الموسَّعة (عرض عام محدود الحقول)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InventoryItemPublicDetailResponse'
+        '404':
+          description: العنصر غير موجود، أو مخفي/مؤرشَف (لا تمييز بين الحالتين للعموم)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/auth/register:
+    post:
+      operationId: registerAccount
+      summary: تسجيل حساب عام جديد (مشترٍ أو بائع)
+      description: 'ينفّذ Mapping داخلي من role_choice/account_type إلى primary_role الفعلي (لا يُقبَل
+        primary_role مباشرة من الطالب إطلاقًا). عند role_choice=''seller'': إنشاء متجر واحد تلقائيًا ضمن
+        نفس المعاملة الذرّية (REQ-STR-001) — فشل إنشاء المتجر يُلغي إنشاء الحساب بالكامل، لا حساب يتيم.
+        تسجيل دخول تلقائي بعد النجاح بنفس آلية POST /auth/login حرفيًا (Set-Cookie، لا آلية جديدة).'
+      x-traceability:
+        requirements:
+        - REQ-IAM-001
+        - REQ-IAM-002
+        - REQ-IAM-006
+        - REQ-STR-001
+        - REQ-SEC-006
+        decisions:
+        - CR-018
+      security: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+      responses:
+        '201':
+          description: تم إنشاء الحساب (ومتجر تلقائي إن كان بائعًا) وتسجيل الدخول تلقائيًا
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RegisterResponse'
+        '400':
+          description: كلمة مرور دون الحد الأدنى، أو تركيبة role_choice/account_type غير صالحة
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: البريد الإلكتروني مُستخدَم أصلًا
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: role_choice أو account_type بقيمة خارج Enum المسموح (يشمل أي محاولة تمرير دور إداري)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/purchase-requests/mine/display:
+    get:
+      operationId: listMyPurchaseRequestsDisplay
+      summary: طلبات الشراء الخاصة بالمستخدم — عرض مقروء بأسماء محلولة (Read Model)
+      description: 'CR-021: Endpoint منفصل تمامًا عن GET /purchase-requests/mine (بلا تعديل عليه إطلاقًا
+        — فُحصت استخداماته الحالية أولًا وقُرِّر Endpoint جديد بدل تغيير عقد قائم، أقل خطورة). يحلّ part_name
+        وmanufacturer_name وmodel_name عبر استعلام واحد مجمَّع (JOINs/LATERAL) — لا N+1، عددان ثابتان
+        من الاستعلامات (عدّ + بيانات) بغضّ النظر عن حجم النتيجة.'
+      x-traceability:
+        requirements: []
+        decisions:
+        - CR-021
+        x-gap-note: لا REQ سابق — Read Model عرض جديد موثَّق تحت CR-021 نفسها.
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: page
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          default: 1
+      - name: page_size
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          default: 20
+      responses:
+        '200':
+          description: طلبات الشراء الخاصة بالمستخدم مع أسماء محلولة
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurchaseRequestDisplayListResponse'
