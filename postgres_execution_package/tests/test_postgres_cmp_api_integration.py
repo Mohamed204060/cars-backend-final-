@@ -224,6 +224,13 @@ class TestBatch1CompatibilityConcurrencyOnLivePostgres:
         trim_id = _make_valid_trim(client)
         tmy_id = self._make_trim_model_year(client, trim_id, 2019)
 
+        # نفس درس الجذر المُشخَّص في VCT concurrency test أعلاه (Repository
+        # insert_* القديمة لا تُثبِّت Commit تلقائيًا): تثبيت بيانات الإعداد
+        # صراحةً على conn قبل فتح أي اتصال متوازٍ، احتياطيًا (لا يغيّر سلوك
+        # هذا الاختبار تحديدًا — insert_compatibility_record_with_lock لا FK ولا
+        # Lookup على trim/trim_model_year الداخليين — لكنه يمنع أي مفاجأة مماثلة).
+        conn.commit()
+
         # اتصالان منفصلان تمامًا (Repository لكل منهما) — يحاكي طلبَي API
         # متزامنين فعليًا من عمليتين مختلفتين، لا مجرد Thread بايثون مشترك.
         conn_a = psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
@@ -244,9 +251,11 @@ class TestBatch1CompatibilityConcurrencyOnLivePostgres:
                     trim_ref_id=trim_id, trim_model_year_ref_id=None,
                     fitment_type="unknown", compatibility_notes=None, source="catalog_admin",
                 )
-                results["general"] = "success"
-            except CompatibilityLevelConflictError:
-                results["general"] = "conflict"
+                results["general"] = ("success", None)
+            except CompatibilityLevelConflictError as e:
+                results["general"] = ("conflict", str(e))
+            except Exception as e:  # noqa: BLE001 — التقاط شامل لتشخيص واضح، لا لإخفاء الفشل
+                results["general"] = (f"unexpected:{type(e).__name__}", str(e))
 
         def insert_year_specific():
             start_barrier.wait()
@@ -256,21 +265,34 @@ class TestBatch1CompatibilityConcurrencyOnLivePostgres:
                     trim_ref_id=None, trim_model_year_ref_id=tmy_id,
                     fitment_type="unknown", compatibility_notes=None, source="catalog_admin",
                 )
-                results["year_specific"] = "success"
-            except CompatibilityLevelConflictError:
-                results["year_specific"] = "conflict"
+                results["year_specific"] = ("success", None)
+            except CompatibilityLevelConflictError as e:
+                results["year_specific"] = ("conflict", str(e))
+            except Exception as e:  # noqa: BLE001
+                results["year_specific"] = (f"unexpected:{type(e).__name__}", str(e))
 
         thread_a = threading.Thread(target=insert_general)
         thread_b = threading.Thread(target=insert_year_specific)
         thread_a.start()
         thread_b.start()
-        thread_a.join(timeout=10)
-        thread_b.join(timeout=10)
+        thread_a.join(timeout=15)
+        thread_b.join(timeout=15)
+
+        assert not thread_a.is_alive(), "thread_a لم ينتهِ خلال المهلة — احتمال Deadlock حقيقي على القفل."
+        assert not thread_b.is_alive(), "thread_b لم ينتهِ خلال المهلة — احتمال Deadlock حقيقي على القفل."
+        assert "general" in results and "year_specific" in results, f"نتائج ناقصة: {results}"
+
+        general_outcome, general_detail = results["general"]
+        year_outcome, year_detail = results["year_specific"]
+        assert general_outcome in ("success", "conflict"), f"general استثناء غير متوقَّع: {general_outcome} — {general_detail}"
+        assert year_outcome in ("success", "conflict"), f"year_specific استثناء غير متوقَّع: {year_outcome} — {year_detail}"
 
         # الضمان الجوهري: بالضبط واحد نجح والآخر رُفِض — أبدًا الاثنان معًا
         # (بغضّ النظر عن أيهما فاز بالقفل، وهو غير محدَّد سلفًا بتصميم الاختبار).
-        outcomes = [results.get("general"), results.get("year_specific")]
-        assert sorted(outcomes) == ["conflict", "success"], f"النتائج غير المتوقعة: {results}"
+        outcomes = sorted([general_outcome, year_outcome])
+        assert outcomes == ["conflict", "success"], (
+            f"general={general_outcome} ({general_detail}), year_specific={year_outcome} ({year_detail})"
+        )
 
         cur = conn.cursor()
         cur.execute(

@@ -206,6 +206,37 @@ class TestBatch1MarketAvailabilityConcurrencyOnLivePostgres:
         _, trim_id = _make_full_chain(client)
         tmy_id = client.post(f"/api/v1/vct/trims/{trim_id}/model-years", json={"year": 2019}).json()["id"]
 
+        # Root-Cause (مؤكَّد): PostgresVctRepository.insert_trim_model_year (نمط
+        # قديم قائم مسبقًا في كل دوال insert_* الأصلية لـVCT، لا خلل مُستحدَث في
+        # هذه الدفعة) يستخدم `with self._connection.cursor()` فقط — بلا
+        # `with self._connection:` — فلا يُثبَّت (Commit) الصف تلقائيًا. الصف
+        # يبقى داخل معاملة `conn` المفتوحة فقط، وبالتالي **غير مرئي** لأي اتصال
+        # PostgreSQL منفصل فعليًا (conn_a/conn_b أدناه) قبل تثبيته صراحةً — هذا
+        # سلوك PostgreSQL القياسي (READ COMMITTED)، لا افتراضًا. إثبات صريح قبل
+        # المتابعة، عبر اتصال مستقل ثالث تمامًا:
+        conn_verify = psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
+        cur_verify = conn_verify.cursor()
+        cur_verify.execute("SELECT id, trim_ref_id, year FROM vct.trim_model_years WHERE id = %s", (tmy_id,))
+        assert cur_verify.fetchone() is None, (
+            "توقُّع مسبق: الصف يجب ألا يكون مرئيًا بعد من اتصال منفصل قبل commit صريح على conn — "
+            "إن ظهر هذا الفشل فالسبب الجذري المُشخَّص هنا لم يعد صحيحًا ويستوجب فحصًا جديدًا."
+        )
+        conn_verify.close()
+
+        # الإصلاح الأصغر والصحيح (Test/Fixture-level فقط، بلا لمس Repository/Business
+        # Logic): تثبيت بيانات الإعداد صراحةً على نفس اتصال conn قبل فتح أي اتصال
+        # متوازٍ — يطابق تمامًا سلوك عميل PostgreSQL حقيقي (Commit بعد كل طلب).
+        conn.commit()
+
+        # إعادة نفس فحص الرؤية أعلاه بعد commit — يجب أن يظهر الصف الآن من اتصال مستقل
+        conn_verify2 = psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
+        cur_verify2 = conn_verify2.cursor()
+        cur_verify2.execute("SELECT id, trim_ref_id, year FROM vct.trim_model_years WHERE id = %s", (tmy_id,))
+        row = cur_verify2.fetchone()
+        assert row is not None, "بعد commit صريح، يجب أن يكون صف trim_model_years مرئيًا لاتصال منفصل — فشل هذا يعني سببًا جذريًا مختلفًا."
+        assert row["trim_ref_id"] == trim_id and row["year"] == 2019
+        conn_verify2.close()
+
         conn_a = psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
         conn_b = psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
         repo_a = PostgresVctRepository(conn_a)
@@ -213,6 +244,9 @@ class TestBatch1MarketAvailabilityConcurrencyOnLivePostgres:
 
         from vct_service import MarketAvailabilityLevelConflictError
 
+        # كل Thread يخزّن ("outcome", detail) دائمًا — لا يترك مفتاحًا غائبًا (None
+        # ضمنيًا) أبدًا، بغضّ النظر عن نوع الاستثناء، لمنع فشل ثانوي مضلِّل من
+        # sorted() عند حدوث استثناء غير متوقَّع (البند 7).
         results = {}
         start_barrier = threading.Barrier(2)
 
@@ -220,9 +254,11 @@ class TestBatch1MarketAvailabilityConcurrencyOnLivePostgres:
             start_barrier.wait()
             try:
                 repo_a.insert_market_availability_with_lock(country_ref_id=str(uuid.uuid4()), trim_ref_id=trim_id)
-                results["trim_level"] = "success"
-            except MarketAvailabilityLevelConflictError:
-                results["trim_level"] = "conflict"
+                results["trim_level"] = ("success", None)
+            except MarketAvailabilityLevelConflictError as e:
+                results["trim_level"] = ("conflict", str(e))
+            except Exception as e:  # noqa: BLE001 — نلتقط كل شيء عمدًا لتشخيص واضح، لا لإخفاء الفشل
+                results["trim_level"] = (f"unexpected:{type(e).__name__}", str(e))
 
         def insert_year_level():
             start_barrier.wait()
@@ -230,19 +266,37 @@ class TestBatch1MarketAvailabilityConcurrencyOnLivePostgres:
                 repo_b.insert_market_availability_with_lock(
                     country_ref_id=str(uuid.uuid4()), trim_model_year_ref_id=tmy_id,
                 )
-                results["year_level"] = "success"
-            except MarketAvailabilityLevelConflictError:
-                results["year_level"] = "conflict"
+                results["year_level"] = ("success", None)
+            except MarketAvailabilityLevelConflictError as e:
+                results["year_level"] = ("conflict", str(e))
+            except Exception as e:  # noqa: BLE001
+                results["year_level"] = (f"unexpected:{type(e).__name__}", str(e))
 
         thread_a = threading.Thread(target=insert_trim_level)
         thread_b = threading.Thread(target=insert_year_level)
         thread_a.start()
         thread_b.start()
-        thread_a.join(timeout=10)
-        thread_b.join(timeout=10)
+        thread_a.join(timeout=15)
+        thread_b.join(timeout=15)
 
-        outcomes = sorted([results.get("trim_level"), results.get("year_level")])
-        assert outcomes == ["conflict", "success"], f"النتائج غير المتوقعة: {results}"
+        assert not thread_a.is_alive(), "thread_a لم ينتهِ خلال المهلة (15 ثانية) — احتمال Deadlock حقيقي على القفل."
+        assert not thread_b.is_alive(), "thread_b لم ينتهِ خلال المهلة (15 ثانية) — احتمال Deadlock حقيقي على القفل."
+
+        assert "trim_level" in results, "thread_a انتهى بلا تسجيل أي نتيجة إطلاقًا — خلل غير متوقَّع في آلية الالتقاط نفسها."
+        assert "year_level" in results, "thread_b انتهى بلا تسجيل أي نتيجة إطلاقًا — خلل غير متوقَّع في آلية الالتقاط نفسها."
+
+        trim_outcome, trim_detail = results["trim_level"]
+        year_outcome, year_detail = results["year_level"]
+
+        # فشل واضح فورًا عند أي استثناء غير متوقَّع (بدل TypeError ثانوي مضلِّل من sorted)
+        assert trim_outcome in ("success", "conflict"), f"trim_level استثناء غير متوقَّع: {trim_outcome} — {trim_detail}"
+        assert year_outcome in ("success", "conflict"), f"year_level استثناء غير متوقَّع: {year_outcome} — {year_detail}"
+
+        outcomes = sorted([trim_outcome, year_outcome])
+        assert outcomes == ["conflict", "success"], (
+            f"يجب أن ينجح واحد بالضبط ويُرفَض الآخر بـMarketAvailabilityLevelConflictError، لا الاثنان معًا ولا كلاهما فشل: "
+            f"trim_level={trim_outcome} ({trim_detail}), year_level={year_outcome} ({year_detail})"
+        )
 
         cur = conn.cursor()
         cur.execute(
