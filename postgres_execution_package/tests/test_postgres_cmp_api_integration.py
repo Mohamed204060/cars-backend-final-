@@ -91,6 +91,17 @@ def _make_valid_trim(client) -> str:
     return trim_resp.json()["id"]
 
 
+def _make_trim_model_year(client, trim_id: str, year: int) -> str:
+    """
+    مشتركة على مستوى الملف — كانت مُعرَّفة أصلًا فقط داخل
+    TestBatch1YearSpecificCompatibilityOnLivePostgres (self._make_trim_model_year)،
+    فسبَّبت AttributeError عند استدعائها من TestBatch1CompatibilityConcurrencyOnLivePostgres
+    (Class مختلف تمامًا). نُقِلت هنا بنفس نمط _make_valid_trim/_make_approved_part
+    أعلاه (دوال مشتركة على مستوى الملف)، لا تكرار للمنطق.
+    """
+    return client.post(f"/api/v1/vct/trims/{trim_id}/model-years", json={"year": year}).json()["id"]
+
+
 class TestCreateRecordOnLivePostgres:
 
     def test_admin_creates_record_for_approved_part_and_valid_trim(self, app_and_client):
@@ -158,15 +169,12 @@ class TestArchiveOnLivePostgres:
 class TestBatch1YearSpecificCompatibilityOnLivePostgres:
     """Approved VCT Design Baseline §10-14: General/Year-specific على اتصال حي."""
 
-    def _make_trim_model_year(self, client, trim_id: str, year: int) -> str:
-        return client.post(f"/api/v1/vct/trims/{trim_id}/model-years", json={"year": year}).json()["id"]
-
     def test_year_specific_record_persisted_correctly(self, app_and_client):
         app, client, conn = app_and_client
         _register_and_login(client, conn, f"admin{uuid.uuid4().hex[:6]}@example.com", role="admin")
         part_id = _make_approved_part(client, conn)
         trim_id = _make_valid_trim(client)
-        tmy_id = self._make_trim_model_year(client, trim_id, 2019)
+        tmy_id = _make_trim_model_year(client, trim_id, 2019)
 
         resp = client.post("/api/v1/cmp/records", json={"catalog_part_ref_id": part_id, "trim_model_year_ref_id": tmy_id})
         assert resp.status_code == 201, resp.text
@@ -185,7 +193,7 @@ class TestBatch1YearSpecificCompatibilityOnLivePostgres:
         _register_and_login(client, conn, f"admin{uuid.uuid4().hex[:6]}@example.com", role="admin")
         part_id = _make_approved_part(client, conn)
         trim_id = _make_valid_trim(client)
-        tmy_id = self._make_trim_model_year(client, trim_id, 2019)
+        tmy_id = _make_trim_model_year(client, trim_id, 2019)
 
         general_resp = client.post("/api/v1/cmp/records", json={"catalog_part_ref_id": part_id, "trim_ref_id": trim_id})
         assert general_resp.status_code == 201
@@ -222,7 +230,7 @@ class TestBatch1CompatibilityConcurrencyOnLivePostgres:
         _register_and_login(client, conn, f"admin{uuid.uuid4().hex[:6]}@example.com", role="admin")
         part_id = _make_approved_part(client, conn)
         trim_id = _make_valid_trim(client)
-        tmy_id = self._make_trim_model_year(client, trim_id, 2019)
+        tmy_id = _make_trim_model_year(client, trim_id, 2019)
 
         # نفس درس الجذر المُشخَّص في VCT concurrency test أعلاه (Repository
         # insert_* القديمة لا تُثبِّت Commit تلقائيًا): تثبيت بيانات الإعداد
