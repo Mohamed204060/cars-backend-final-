@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: منصة قطع غيار السيارات - Auto Parts Marketplace API
-  version: 1.18.0
+  version: 1.19.0
   description: 'مواصفة API تنفيذية، تغطي 15 عملية (Operations) عبر 14 مسارًا (Paths): الواجهات التمثيلية
     الخمس الأصلية الموثّقة بالتفصيل في التصميم التفصيلي (الحزمة 2)، بالإضافة إلى 5 عمليات خدمة Auth (اعتماد
     Contract Extension & Implementation Plan): تسجيل خروج، عرض/إضافة/إزالة وسائل الهوية، وعرض مزوّدي الهوية
@@ -598,10 +598,9 @@ components:
     MediaAttachmentResponse:
       type: object
       description: >-
-        Batch 2 Unit 1 (§5-7): الربط + sort_order (يُحسَب من الخادم تحت
-        Advisory Transaction Lock، §6/§15). Unit 1 لا تتحقق من ownership
-        الحقيقي (Placeholder يُستكمَل في Unit 2) — الاستهلاك الإنتاجي
-        لهذا المسار مشروط باكتمال Unit 2.
+        الربط + sort_order (يُحسَب من الخادم تحت Advisory Transaction
+        Lock، §6/§15). Batch 2 Unit 2: ownership الحقيقي (Real PR/Offer/
+        Inventory) مُفعَّل بالكامل — لا Placeholder بعد الآن.
       properties:
         id:
           type: string
@@ -620,6 +619,26 @@ components:
         status:
           type: string
           enum: [active, archived]
+    MediaAccessResponse:
+      type: object
+      description: >-
+        Batch 2 Unit 2 (§9-10): يحل الرؤية الفعلية — Public دائم بلا TTL
+        لـinventory_item (مع Watermark مُطبَّق مسبقًا وقت الربط)، أو
+        Signed URL بمهلة MEDIA_SIGNED_URL_TTL_SECONDS لـpurchase_request/
+        offer بعد اجتياز مصفوفة تفويض العرض (403 ACCESS_FORBIDDEN
+        خلاف ذلك — مجرد تسجيل الدخول أو الدور لا يكفي).
+      properties:
+        attachment_id:
+          type: string
+          format: uuid
+        public:
+          type: boolean
+        watermarked:
+          type: boolean
+        display_url:
+          type: string
+        thumbnail_url:
+          type: string
     TrimModelYearCreateRequest:
       type: object
       required:
@@ -4594,11 +4613,13 @@ paths:
   /api/v1/media/attachments:
     post:
       operationId: createMediaAttachment
-      summary: 'Batch 2 Unit 1 (§6/§7/§15): ربط Asset بسياق Business (Purchase Request/Offer/Inventory Item)'
+      summary: 'Batch 2 (§6/§7/§9/§15): ربط Asset بسياق Business (Purchase Request/Offer/Inventory Item)'
       description: >-
         الحد (5 صور لـPR/Offer، بلا حد لـInventory)، sort_order، والإدراج —
         كلها تحت Advisory Transaction Lock واحد (namespace='media-binding').
-        Unit 1: التحقق من ownership الفعلي Placeholder (يُستكمَل Unit 2).
+        Unit 2: ownership الفعلي (PR/Offer/Inventory حقيقية) مُفعَّل بالكامل.
+        عند الربط بـinventory_item تحديدًا: يُطبَّق Watermark فعليًا على
+        Display/Thumbnail فورًا (§9) — لا يُطبَّق على PR/Offer إطلاقًا.
       x-traceability:
         requirements: []
         decisions: []
@@ -4680,10 +4701,55 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/media/attachments/{attachmentId}/access:
+    get:
+      operationId: getMediaAttachmentAccess
+      summary: 'Batch 2 Unit 2 (§9-10): حل الوصول الفعلي (Public/Signed) لمرفق محدَّد'
+      description: >-
+        inventory_item: Public دائم بلا TTL (Watermark مُطبَّق مسبقًا وقت
+        الربط). purchase_request/offer: Signed بمهلة
+        MEDIA_SIGNED_URL_TTL_SECONDS بعد اجتياز مصفوفة §10 (صاحب الطلب،
+        أو بائع لديه Offer فعلي على الطلب نفسه لصور PR؛ صاحب العرض أو
+        مشتري PR المرتبط لصور Offer؛ Admin دائمًا) — 403 خلاف ذلك.
+      x-traceability:
+        requirements: []
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: attachmentId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: روابط الوصول (عامة أو موقَّعة بحسب owner_type)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MediaAccessResponse'
+        '403':
+          description: 'ACCESS_FORBIDDEN — مجرد تسجيل الدخول أو الدور لا يكفي؛ يلزم اجتياز مصفوفة §10 فعليًا'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: ATTACHMENT_NOT_FOUND أو ASSET_NOT_FOUND
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /api/v1/media/attachments/{attachmentId}/archive:
     post:
       operationId: archiveMediaAttachment
-      summary: 'Batch 2 Unit 1 (§7): أرشفة مرفق (قبل Submit فقط — بلا حذف الأصل نفسه)'
+      summary: 'Batch 2 (§7): أرشفة مرفق (قبل Submit فقط — بلا حذف الأصل نفسه)'
+      description: >-
+        Batch 2 Unit 2: يتطلب الآن تفويض حقيقي (المستخدم يملك Business
+        Entity المستهدف فعليًا) — لا مسار مفتوح للجميع كما كان في Unit 1.
       x-traceability:
         requirements: []
         decisions: []
@@ -4704,6 +4770,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/MediaAttachmentResponse'
+        '403':
+          description: ARCHIVE_FORBIDDEN
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: ATTACHMENT_NOT_FOUND
           content:
