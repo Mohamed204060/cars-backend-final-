@@ -47,6 +47,16 @@ class StorageAdapter(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def read(self, key: str) -> bytes:
+        """
+        Batch 2 Unit 2: قراءة محتوى مُخزَّن فعليًا — ضرورية لإعادة معالجة
+        صورة موجودة (Watermark على Derived Display لـinventory_item، §9)
+        بلا الاحتفاظ بالبايتات الأصلية خارج Storage. يرفع StorageError
+        إن لم يكن key موجودًا.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     def exists(self, key: str) -> bool:
         raise NotImplementedError
 
@@ -91,6 +101,13 @@ class LocalStorageAdapter(StorageAdapter):
     def get_public_url(self, key: str) -> str:
         return f"{self._public_base_url}/public/{key}"
 
+    def read(self, key: str) -> bytes:
+        path = self._resolve_path(key)
+        if not os.path.isfile(path):
+            raise StorageError(f"key غير موجود: {key!r}")
+        with open(path, "rb") as f:
+            return f.read()
+
     def exists(self, key: str) -> bool:
         return os.path.isfile(self._resolve_path(key))
 
@@ -124,6 +141,9 @@ class S3CompatibleStorageAdapter(StorageAdapter):
 
     def get_public_url(self, key: str) -> str:
         raise NotImplementedError("S3CompatibleStorageAdapter.get_public_url: انظر تعليق put أعلاه.")
+
+    def read(self, key: str) -> bytes:
+        raise NotImplementedError("S3CompatibleStorageAdapter.read: انظر تعليق put أعلاه.")
 
     def exists(self, key: str) -> bool:
         raise NotImplementedError("S3CompatibleStorageAdapter.exists: انظر تعليق put أعلاه.")
