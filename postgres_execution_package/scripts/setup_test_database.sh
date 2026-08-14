@@ -3,7 +3,7 @@
 # الحالة: Prepared — لم يُشغَّل فعليًا في هذه الجلسة (لا اتصال شبكة/PostgreSQL هنا)
 #
 # الغرض: إنشاء قاعدة بيانات اختبار فارغة تمامًا، ثم تطبيق كل ملفات
-# الترحيل (000 حتى 031) بالترتيب الرقمي من الصفر. الحزمة مكتفية ذاتيًا
+# الترحيل (000 حتى 032) بالترتيب الرقمي من الصفر. الحزمة مكتفية ذاتيًا
 # بالكامل: لا اعتماد على أي ملف خارج مجلد migrations/ المرفَق هنا.
 #
 # الاستخدام (في بيئة خارجية فعلية تدعم PostgreSQL):
@@ -26,9 +26,10 @@ REQUIRED_FILES=(
   "027_com_conversation_participants.sql" "028_pur_purchase_request_condition_notes.sql"
   "029_vct_trim_model_years_and_market_availability.sql" "030_cmp_year_specific_compatibility.sql"
   "031_pur_purchase_request_trim_model_year.sql"
+  "032_media_foundation.sql"
 )
 
-echo "=== التحقق من اكتمال جميع ملفات الترحيل المطلوبة (000-031) قبل أي تنفيذ ==="
+echo "=== التحقق من اكتمال جميع ملفات الترحيل المطلوبة (000-032) قبل أي تنفيذ ==="
 missing=0
 for f in "${REQUIRED_FILES[@]}"; do
   if [ ! -f "$MIGRATIONS_DIR/$f" ]; then
@@ -40,7 +41,7 @@ if [ "$missing" -eq 1 ]; then
   echo "=== فشل التحقق: ملفات ترحيل مطلوبة مفقودة؛ توقُّف قبل أي تنفيذ فعلي على قاعدة البيانات ==="
   exit 1
 fi
-echo "=== نجاح: جميع ملفات الترحيل الـ31 (000-031، بلا 024) موجودة فعليًا في الحزمة — Batch 1 ==="
+echo "=== نجاح: جميع ملفات الترحيل الـ32 (000-032، بلا 024) موجودة فعليًا في الحزمة — Batch 2 Unit 1 ==="
 
 echo "=== إسقاط قاعدة الاختبار إن وُجدت (لضمان بداية نظيفة فعلية) ==="
 dropdb --if-exists "$DB_NAME"
@@ -48,7 +49,7 @@ dropdb --if-exists "$DB_NAME"
 echo "=== إنشاء قاعدة اختبار فارغة تمامًا ==="
 createdb "$DB_NAME"
 
-echo "=== تطبيق كل ملفات الترحيل بالترتيب الرقمي (000 حتى 031) ==="
+echo "=== تطبيق كل ملفات الترحيل بالترتيب الرقمي (000 حتى 032) ==="
 for f in "${REQUIRED_FILES[@]}"; do
   echo "--- تطبيق: $f ---"
   psql -d "$DB_NAME" -v ON_ERROR_STOP=1 -f "$MIGRATIONS_DIR/$f"
@@ -57,4 +58,4 @@ done
 echo "=== التحقق السريع: عدد المخططات المُنشَأة ==="
 psql -d "$DB_NAME" -c "SELECT schema_name FROM information_schema.schemata WHERE schema_name NOT LIKE 'pg_%' AND schema_name != 'information_schema' ORDER BY schema_name;"
 
-echo "=== نجاح: قاعدة الاختبار '$DB_NAME' جاهزة بكل الجداول من الصفر (31 ملف ترحيل مُطبَّق) ==="
+echo "=== نجاح: قاعدة الاختبار '$DB_NAME' جاهزة بكل الجداول من الصفر (32 ملف ترحيل مُطبَّق) ==="
