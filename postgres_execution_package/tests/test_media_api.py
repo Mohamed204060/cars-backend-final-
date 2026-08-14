@@ -35,7 +35,8 @@ def app_and_client():
     app = FastAPI()
     app.include_router(auth_router)
     app.include_router(media_router)
-    app.state.auth_repository = InMemoryAuthRepository()
+    providers = [IdentityProvider(code="email_password", display_name="كلمة المرور", category="password", is_enabled=True)]
+    app.state.auth_repository = InMemoryAuthRepository(providers=providers, identities=[])
     app.state.session_repository = InMemorySessionRepository()
     app.state.media_repository = InMemoryMediaRepository()
     app.state.storage_adapter = InMemoryStorageAdapter()
