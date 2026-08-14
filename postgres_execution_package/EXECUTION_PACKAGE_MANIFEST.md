@@ -465,3 +465,37 @@ Auth · PCT · VCT · CMP · Search · Store · Inventory · Orders · Messaging
 
 ### الحالة
 **Batch 1 مكتملة الآن Backend + Frontend معًا.** بانتظار Exceptional Gate. لا اعتماد ذاتي.
+
+## تحديث عشرون — Batch 2: Unit 1 — Media Foundation (Backend)
+
+**Baseline المرجعي:** CarsMaint Media Foundation — Approved Baseline v1.0 (الحاكمة، تُلغي أي صياغة أقدم متعارضة). Reality Check سابق للتنفيذ أثبت **صفر تعارض** مع الكود القائم (رقم Migration التالي 032، conventions status/timestamps/CHECK مطابقة، لا shared config utility مركزي — env vars تُقرَأ مباشرة بنفس نمط auth_api.py، schema جديد مسبوق بـ018_ntf.sql).
+
+### Migration 032 — media_foundation.sql
+- `CREATE SCHEMA media` + `media.assets` (§2-3: id/storage_key(+display+thumbnail)/original_file_name/mime_type/size_bytes/checksum/width/height/status/uploaded_by_user_ref_id/created_at/archived_at/purged_at، **بلا عمود visibility**) + `media.attachments` (§5: asset_ref_id FK داخلي ON DELETE RESTRICT، owner_type/owner_ref_id Polymorphic بلا FK، sort_order، status، UNIQUE(asset_ref_id)).
+- **العدد النهائي: 32 migration.**
+
+### الوحدات الجديدة (services/media/src + services/shared/src/storage.py)
+- `storage.py`: `StorageAdapter` (ABC) + `LocalStorageAdapter` (فعلي، مُختبَر) + `S3CompatibleStorageAdapter` (هيكل كامل، تنفيذ الشبكة مؤجَّل صراحةً لغياب بيانات اعتماد S3 حقيقية) + `InMemoryStorageAdapter` (اختباري).
+- `media_service.py`: خط معالجة صور **فعلي بالكامل عبر Pillow** (Magic Bytes → Decode → EXIF orientation+Strip → Re-encode → Master/Display(1600px)/Thumbnail(300px)، JPEG quality 80، PNG مع Alpha حقيقي يبقى PNG) — **مُختبَر تنفيذيًا مباشرة في هذه الجلسة** (9+2 سيناريوهات حقيقية: JPEG عادي، PNG بلا/مع Alpha حقيقي، WebP، تجاوز 8000px، ملف غير صورة، Magic Bytes صحيحة لكن Decode فاشل، تجاوز 10MB، HEIC مرفوضة صراحةً، تصحيح دوران EXIF فعلي مع تبديل الأبعاد، Strip EXIF كامل). دوال Binding Authorization + Limits (§6-7) كمنطق أعمال خالص.
+- `media_repository.py`: Postgres (Advisory Lock `namespace='media-binding'`، نطاق القفل (owner_type, owner_ref_id)، COUNT+sort_order+INSERT ذرية) + InMemory — **مُختبَرة تنفيذيًا** (5 صور تنجح، السادسة تُرفَض، Inventory بلا حد، Asset غير ready يُرفَض، تفويض مرفوض يُرفَض).
+- `media_api.py`: 5 مسارات (POST /media/assets، GET /media/assets/{id}، POST/GET /media/attachments، POST /media/attachments/{id}/archive). `media_ownership_checker` مُحقَن عبر `app.state` (SSOT، نفس نمط `is_part_approved_checker`) — **Unit 1 لا تُموِّن تنفيذًا حقيقيًا** (Fail Loud عبر AttributeError إن لم يُوصَّل، لا Fail Silent)؛ Unit 2 يحقن الفحص الفعلي.
+
+### الاختبارات
+- `test_media_api.py` (Unit، InMemory، صور Pillow حقيقية عبر Multipart فعلي): **17 اختبارًا.**
+- `test_postgres_media_api_integration.py` (Postgres حي): **6 اختبارات**، شاملة CHECK constraints فعلية (status/owner_type)، UNIQUE(asset_ref_id) فعلي، FK RESTRICT فعلي، **واختبار Concurrency حقيقي** (اتصالان منفصلان + Barrier) يثبت أن بالضبط طلب واحد يملأ الفتحة الخامسة الأخيرة والآخر يُرفَض بـATTACHMENT_LIMIT_EXCEEDED — مع درس Transaction Visibility من Batch 1 مُطبَّقًا من أول سطر (`conn.commit()` صريح قبل فتح الاتصالات الموازية، لا مُكتشَفًا بعد فشل CI).
+- **الإجمالي الجديد: 23 اختبارًا. الإجمالي الكلي: 450** (427 Batch 1 + 23 Batch 2 Unit 1).
+
+### OpenAPI
+`v1.17.0 → v1.18.0`. Structural Verification آلي: **صفر فجوات** بين الكود والـspec. مخططان جديدان (AssetResponse/AttachmentCreateRequest/AttachmentResponse) و5 مسارات موثَّقة بالكامل.
+
+### Schema Drift المتوقَّع
+**59 جدولًا (57+2) / 59 PK / 39 FK (38+1 لـasset_ref_id).**
+
+### Workflow
+`migration_count` → 32. جوبان جديدان: `media-api-tests` (Unit) و`media-integration-tests` (Postgres) — تحقَّقت أنهما الوحيدان اللذان يستوردان media_router/media_repository في كل الحزمة (لا فجوة Fixture).
+
+### Regression Sweep (بعد الإضافة)
+`py_compile`/AST كامل لكل الحزمة (Batch 1 + Unit 1) — نجاح. `conftest.py` الديناميكي اكتشف `services/media/src` تلقائيًا **بلا أي تعديل عليه** (19 مسارًا الآن، كانت 18). فحص AST لـ`self.X` غير معرَّف عبر **كل** ملفات الاختبار في المستودع (لا الجديدة فقط) — صفر مشاكل.
+
+### الحالة
+Unit 1 مكتملة تقنيًا (منطق الأعمال ومعالجة الصور مُختبَران تنفيذيًا فعليًا في هذه الجلسة؛ PostgreSQL Integration وCI الفعلي بانتظار GitHub كالمعتاد — Deferred CI). **لا اعتماد ذاتي.** Unit 2 (ربط الصور بـPR/Offer/Inventory الفعلية) هي التالية مباشرة وفق الترتيب المعتمَد.
