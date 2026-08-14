@@ -356,12 +356,23 @@ class TestCR021PurchaseRequestDisplayProjection:
     def test_original_mine_endpoint_unchanged(self, app_and_client):
         """
         يثبت أن GET /purchase-requests/mine الأساسي لم يتأثر بـRead Model
-        CR-021 (part_name/manufacturer_name تبقى غائبة، هذا العقد بلا JOINs).
+        CR-021 (part_name/manufacturer_name تبقى غائبة، هذا العقد بلا JOINs
+        ولا حقول Display Projection إضافية تتسرَّب إليه).
+
         تحديث CR-022 (2026-08): مجموعة المفاتيح المتوقَّعة توسَّعت إضافيًا
         بحقلي condition_ref_id/notes — نفس PurchaseRequestResponse يُستخدَم
         فعليًا لكل مسارات PR (إنشاء/عرض/قائمة)، وهذان عمودان حقيقيان في
         الجدول (لا Read Model منفصل كحالة CR-021)؛ إضافة حقلين Nullable لا
         تكسر أي مستهلك حالي (توافق خلفي قياسي لإضافات JSON).
+
+        تحديث Batch 1: مجموعة المفاتيح توسَّعت مجددًا بحقل
+        trim_model_year_ref_id — بنفس مبدأ condition_ref_id/notes أعلاه
+        حرفيًا: عمود Domain حقيقي على pur.purchase_requests (Migration 031،
+        Approved VCT Design Baseline §23)، لا حقل Display Projection محلول
+        عبر JOIN. الفرق الجوهري الذي يبقى هذا الاختبار يحرسه دون تغيير:
+        part_name/manufacturer_name (ومثيلاتهما من CR-021) تبقيان غائبتين
+        عن هذا العقد الأساسي دائمًا — تلك حقول Read Model منفصلة تمامًا
+        (GET /purchase-requests/mine/display)، لا تُخلَط بعقد /mine الخام.
         """
         app, client = app_and_client
         part_id = _make_approved_part(app, client)
@@ -375,10 +386,11 @@ class TestCR021PurchaseRequestDisplayProjection:
         assert "manufacturer_name" not in item
         assert set(item.keys()) == {
             "id", "business_code", "buyer_user_ref_id", "catalog_part_ref_id", "trim_ref_id", "status",
-            "condition_ref_id", "notes",
+            "condition_ref_id", "notes", "trim_model_year_ref_id",
         }
         assert item["condition_ref_id"] is None
         assert item["notes"] is None
+        assert item["trim_model_year_ref_id"] is None
 
     def test_no_internal_or_other_user_data_leak(self, app_and_client):
         app, client = app_and_client
