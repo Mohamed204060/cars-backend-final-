@@ -827,7 +827,44 @@ EXPECTED_TABLES = {('sys', 'idempotency_keys'): {'columns': {'id': {'type': 'uui
                     'indexes': ['idx_trims_generation_id'],
                     'partial_indexes': [],
                     'primary_key_constraints': {'trims_pkey': 'PRIMARY KEY (id)'},
-                    'foreign_key_constraints': {'trims_generation_id_fkey': 'FOREIGN KEY (generation_id) REFERENCES vct.generations(id)'}}}
+                    'foreign_key_constraints': {'trims_generation_id_fkey': 'FOREIGN KEY (generation_id) REFERENCES vct.generations(id)'}},
+                    ('media', 'assets'): {
+                        'columns': {'id': {'type': 'uuid', 'nullable': False, 'has_default': True},
+                                    'storage_key': {'type': 'character varying', 'nullable': True, 'has_default': False},
+                                    'storage_key_display': {'type': 'character varying', 'nullable': True, 'has_default': False},
+                                    'storage_key_thumbnail': {'type': 'character varying', 'nullable': True, 'has_default': False},
+                                    'original_file_name': {'type': 'character varying', 'nullable': False, 'has_default': False},
+                                    'mime_type': {'type': 'character varying', 'nullable': True, 'has_default': False},
+                                    'size_bytes': {'type': 'bigint', 'nullable': True, 'has_default': False},
+                                    'checksum': {'type': 'character', 'nullable': True, 'has_default': False},
+                                    'width': {'type': 'integer', 'nullable': True, 'has_default': False},
+                                    'height': {'type': 'integer', 'nullable': True, 'has_default': False},
+                                    'status': {'type': 'character varying', 'nullable': False, 'has_default': True},
+                                    'uploaded_by_user_ref_id': {'type': 'uuid', 'nullable': False, 'has_default': False},
+                                    'created_at': {'type': 'timestamp with time zone', 'nullable': False, 'has_default': True},
+                                    'archived_at': {'type': 'timestamp with time zone', 'nullable': True, 'has_default': False},
+                                    'purged_at': {'type': 'timestamp with time zone', 'nullable': True, 'has_default': False}},
+                        'unique_constraints': [],
+                        'check_constraints': ['chk_media_assets_status'],
+                        'indexes': ['idx_media_assets_status', 'idx_media_assets_uploaded_by'],
+                        'partial_indexes': [],
+                        'primary_key_constraints': {'assets_pkey': 'PRIMARY KEY (id)'},
+                        'foreign_key_constraints': {}},
+                    ('media', 'attachments'): {
+                        'columns': {'id': {'type': 'uuid', 'nullable': False, 'has_default': True},
+                                    'asset_ref_id': {'type': 'uuid', 'nullable': False, 'has_default': False},
+                                    'owner_type': {'type': 'character varying', 'nullable': False, 'has_default': False},
+                                    'owner_ref_id': {'type': 'uuid', 'nullable': False, 'has_default': False},
+                                    'sort_order': {'type': 'integer', 'nullable': False, 'has_default': False},
+                                    'status': {'type': 'character varying', 'nullable': False, 'has_default': True},
+                                    'created_at': {'type': 'timestamp with time zone', 'nullable': False, 'has_default': True}},
+                        'unique_constraints': ['uq_media_attachments_asset'],
+                        'check_constraints': ['chk_media_attachments_owner_type', 'chk_media_attachments_status'],
+                        'indexes': ['idx_media_attachments_owner'],
+                        'partial_indexes': [],
+                        'primary_key_constraints': {'attachments_pkey': 'PRIMARY KEY (id)'},
+                        # asset_ref_id FK داخلي حقيقي (نفس نطاق media) — يختلف عن كل owner_ref_id الأخرى في المشروع (Polymorphic بلا FK عمدًا، §5)
+                        'foreign_key_constraints': {'attachments_asset_ref_id_fkey': 'FOREIGN KEY (asset_ref_id) REFERENCES media.assets(id) ON DELETE RESTRICT'}}}
 
 # استثناءات معتمَدة صراحة (لا تُحتسَب كانحراف رغم أنها قد تبدو كذلك ظاهريًا)
 APPROVED_EXCEPTIONS_NOTE = {
