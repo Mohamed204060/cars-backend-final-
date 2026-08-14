@@ -35,6 +35,21 @@ class MediaRepository(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def update_asset_display_variants(
+        self, asset_id: str, storage_key_display: str, storage_key_thumbnail: str,
+    ) -> Asset:
+        """
+        Batch 2 Unit 2 (§9 Watermark): تحديث مُستهدَف لمفتاحَي Display/
+        Thumbnail فقط بعد إعادة ترميزهما بعلامة مائية (لـinventory_item
+        حصرًا). عمدًا **لا** يستخدم update_asset_processing_result أعلاه
+        (تلك تكتب كل الحقول دفعة واحدة — استدعاؤها ثانيةً بحقول جزئية
+        فقط كان سيُصفِّر storage_key/mime_type/checksum/... في Postgres،
+        إذ تنفيذها UPDATE شامل بلا COALESCE). لا يمسّ status ولا
+        storage_key (Master) ولا checksum إطلاقًا.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     def archive_asset(self, asset_id: str) -> Asset:
         raise NotImplementedError
 
@@ -139,6 +154,18 @@ class PostgresMediaRepository(MediaRepository):
                      "storage_key_display": storage_key_display, "storage_key_thumbnail": storage_key_thumbnail,
                      "mime_type": mime_type, "size_bytes": size_bytes, "checksum": checksum,
                      "width": width, "height": height},
+                )
+        return self.get_asset_by_id(asset_id)
+
+    def update_asset_display_variants(
+        self, asset_id: str, storage_key_display: str, storage_key_thumbnail: str,
+    ) -> Asset:
+        with self._connection:
+            with self._connection.cursor() as cur:
+                cur.execute(
+                    "UPDATE media.assets SET storage_key_display = %(display)s, "
+                    "storage_key_thumbnail = %(thumb)s WHERE id = %(id)s",
+                    {"id": asset_id, "display": storage_key_display, "thumb": storage_key_thumbnail},
                 )
         return self.get_asset_by_id(asset_id)
 
@@ -289,6 +316,14 @@ class InMemoryMediaRepository(MediaRepository):
         if checksum is not None: asset.checksum = checksum
         if width is not None: asset.width = width
         if height is not None: asset.height = height
+        return asset
+
+    def update_asset_display_variants(
+        self, asset_id: str, storage_key_display: str, storage_key_thumbnail: str,
+    ) -> Asset:
+        asset = self._assets[asset_id]
+        asset.storage_key_display = storage_key_display
+        asset.storage_key_thumbnail = storage_key_thumbnail
         return asset
 
     def archive_asset(self, asset_id: str) -> Asset:

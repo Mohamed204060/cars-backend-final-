@@ -267,6 +267,49 @@ def make_storage_key(asset_id: str, variant: str, mime_type: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# §9 (Watermark) — Batch 2 Unit 2. يُطبَّق حصرًا على Derived Display لـ
+# inventory_item فقط (Public)، أبدًا على Master (Private دائمًا)، أبدًا على
+# PR/Offer (Private + no watermark). التوقيت: عند Bind فعليًا (owner_type
+# يُعرَف فقط حينها، لا وقت Upload) — يُعاد ترميز display/thumbnail بعلامة
+# مائية ويُستبدَل نفس storage_key الأصلي عبر Storage.put (لا Migration
+# جديدة، لا عمود إضافي — نفس المفتاح، محتوى جديد).
+# ---------------------------------------------------------------------------
+
+WATERMARK_TEXT = "CarsMaint"
+WATERMARK_OPACITY = 96  # من 255 — شفافية جزئية، لا يحجب الصورة
+
+
+def apply_watermark(image_bytes: bytes, mime_type: str) -> bytes:
+    """
+    يرسم علامة مائية نصية متكررة قطريًا بشفافية جزئية فوق الصورة. يُعيد
+    ترميزًا كاملًا جديدًا (نفس صيغة الإدخال: JPEG يبقى JPEG بلا Alpha؛ PNG
+    يبقى PNG محتفظًا بأي Alpha أصلي).
+    """
+    from PIL import ImageDraw, ImageFont
+
+    img = Image.open(io.BytesIO(image_bytes))
+    img = img.convert("RGBA") if img.mode != "RGBA" else img.copy()
+
+    overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+    try:
+        font = ImageFont.load_default()
+    except Exception:
+        font = None
+
+    step_x, step_y = 180, 120
+    for y in range(0, img.height + step_y, step_y):
+        for x in range(0, img.width + step_x, step_x):
+            draw.text((x, y), WATERMARK_TEXT, fill=(255, 255, 255, WATERMARK_OPACITY), font=font)
+
+    watermarked = Image.alpha_composite(img, overlay)
+
+    if mime_type == "image/png":
+        return _encode(watermarked, "PNG")
+    return _encode(watermarked.convert("RGB"), "JPEG")
+
+
+# ---------------------------------------------------------------------------
 # دورة الحياة (§3) — تحقق انتقالات الحالة فقط، بلا أي وصول لقاعدة بيانات
 # ---------------------------------------------------------------------------
 
