@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: منصة قطع غيار السيارات - Auto Parts Marketplace API
-  version: 1.17.0
+  version: 1.18.0
   description: 'مواصفة API تنفيذية، تغطي 15 عملية (Operations) عبر 14 مسارًا (Paths): الواجهات التمثيلية
     الخمس الأصلية الموثّقة بالتفصيل في التصميم التفصيلي (الحزمة 2)، بالإضافة إلى 5 عمليات خدمة Auth (اعتماد
     Contract Extension & Implementation Plan): تسجيل خروج، عرض/إضافة/إزالة وسائل الهوية، وعرض مزوّدي الهوية
@@ -500,6 +500,126 @@ components:
         transmission_type_ref_id:
           type: string
           format: uuid
+    ManufacturerListItem:
+      type: object
+      description: 'Batch 1 (Frontend Enablement): عنصر قائمة تصفح عام — الشركات المصنِّعة المعتمَدة فقط.'
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          nullable: true
+          description: من vct.localized_names (owner_type='manufacturer')؛ null إن لم يوجد اسم مُدرَج.
+    ModelListItem:
+      type: object
+      description: 'Batch 1: الموديلات المعتمَدة تحت شركة مصنِّعة محدَّدة.'
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          nullable: true
+    GenerationListItem:
+      type: object
+      description: 'Batch 1: الأجيال تحت موديل محدَّد (بلا دورة حياة اعتماد منفصلة — بلا status).'
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          nullable: true
+        start_year:
+          type: integer
+          nullable: true
+        end_year:
+          type: integer
+          nullable: true
+    TrimListItem:
+      type: object
+      description: 'Batch 1: الفئات تحت جيل محدَّد.'
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          nullable: true
+        fuel_type_ref_id:
+          type: string
+          format: uuid
+        transmission_type_ref_id:
+          type: string
+          format: uuid
+    MediaAssetResponse:
+      type: object
+      description: >-
+        Batch 2 Unit 1 (Media Foundation Approved Baseline v1.0 §2-3): يمثّل
+        media.assets — الملف ودورة حياته التقنية فقط. لا حقل visibility
+        (يُشتَق من owner_type وقت القراءة عبر media.attachments، §9).
+      properties:
+        id:
+          type: string
+          format: uuid
+        original_file_name:
+          type: string
+        status:
+          type: string
+          enum: [pending, processing, ready, failed, archived]
+        mime_type:
+          type: string
+          nullable: true
+          description: يُحسَم فعليًا بعد Magic Bytes + Decode؛ NULL حتى status=ready.
+        size_bytes:
+          type: integer
+          nullable: true
+        width:
+          type: integer
+          nullable: true
+        height:
+          type: integer
+          nullable: true
+    MediaAttachmentCreateRequest:
+      type: object
+      required: [asset_ref_id, owner_type, owner_ref_id]
+      properties:
+        asset_ref_id:
+          type: string
+          format: uuid
+        owner_type:
+          type: string
+          enum: [purchase_request, offer, inventory_item]
+        owner_ref_id:
+          type: string
+          format: uuid
+          description: Polymorphic — pur.purchase_requests.id أو pur.offers.id أو str.inventory_items.id بحسب owner_type. بلا FK فعلي (§5).
+    MediaAttachmentResponse:
+      type: object
+      description: >-
+        Batch 2 Unit 1 (§5-7): الربط + sort_order (يُحسَب من الخادم تحت
+        Advisory Transaction Lock، §6/§15). Unit 1 لا تتحقق من ownership
+        الحقيقي (Placeholder يُستكمَل في Unit 2) — الاستهلاك الإنتاجي
+        لهذا المسار مشروط باكتمال Unit 2.
+      properties:
+        id:
+          type: string
+          format: uuid
+        asset_ref_id:
+          type: string
+          format: uuid
+        owner_type:
+          type: string
+          enum: [purchase_request, offer, inventory_item]
+        owner_ref_id:
+          type: string
+          format: uuid
+        sort_order:
+          type: integer
+        status:
+          type: string
+          enum: [active, archived]
     TrimModelYearCreateRequest:
       type: object
       required:
@@ -3817,6 +3937,28 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+    get:
+      operationId: listManufacturers
+      summary: 'Batch 1 (Frontend Enablement): قائمة الشركات المصنِّعة المعتمَدة (عام، بلا جلسة)'
+      description: >-
+        نفس طبيعة GET /search/parts العامة (security: []) — جزء من رحلة
+        اختيار السيارة العامة (بحث)، لا عملية إدارية. فجوة حقيقية سُدَّت
+        في هذه الدفعة (لا مسار قائمة كان موجودًا أصلًا).
+      x-traceability:
+        requirements: []
+        decisions: []
+      security: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      responses:
+        '200':
+          description: قائمة الشركات المصنِّعة المعتمَدة
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ManufacturerListItem'
   /api/v1/vct/manufacturers/{manufacturerId}:
     get:
       operationId: getManufacturer
@@ -3935,6 +4077,30 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+    get:
+      operationId: listModelsForManufacturer
+      summary: 'Batch 1 (Frontend Enablement): قائمة الموديلات المعتمَدة تحت شركة مصنِّعة (عام، بلا جلسة)'
+      x-traceability:
+        requirements: []
+        decisions: []
+      security: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: manufacturerId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: قائمة الموديلات المعتمَدة
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ModelListItem'
   /api/v1/vct/models/{modelId}/generations:
     post:
       operationId: createGeneration
@@ -3966,6 +4132,30 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+    get:
+      operationId: listGenerationsForModel
+      summary: 'Batch 1 (Frontend Enablement): قائمة الأجيال تحت موديل (عام، بلا جلسة)'
+      x-traceability:
+        requirements: []
+        decisions: []
+      security: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: modelId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: قائمة الأجيال
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/GenerationListItem'
   /api/v1/vct/generations/{generationId}:
     get:
       operationId: getGeneration
@@ -4084,6 +4274,30 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+    get:
+      operationId: listTrimsForGeneration
+      summary: 'Batch 1 (Frontend Enablement): قائمة الفئات تحت جيل (عام، بلا جلسة)'
+      x-traceability:
+        requirements: []
+        decisions: []
+      security: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: generationId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: قائمة الفئات
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TrimListItem'
   /api/v1/vct/trims/{trimId}:
     get:
       operationId: getTrim
@@ -4159,12 +4373,11 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
     get:
       operationId: listTrimModelYears
-      summary: 'Batch 1: قائمة سنوات الموديل لفئة سيارة'
+      summary: 'Batch 1: قائمة سنوات الموديل لفئة سيارة (عام، بلا جلسة — Frontend Enablement)'
       x-traceability:
         requirements: []
         decisions: []
-      security:
-      - sessionAuth: []
+      security: []
       parameters:
       - $ref: '#/components/parameters/CorrelationIdHeader'
       - name: trimId
@@ -4299,6 +4512,200 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '409':
           description: 'MARKET_AVAILABILITY_LEVEL_CONFLICT — تعايش Trim-level/Year-specific لنفس الفئة'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/media/assets:
+    post:
+      operationId: uploadMediaAsset
+      summary: 'Batch 2 Unit 1 (Media Foundation §4/§14): رفع ومعالجة ملف صورة (multipart/form-data)'
+      description: >-
+        Upload منفصل عن Bind عمدًا (§14). المعالجة (Magic Bytes → Decode →
+        EXIF strip → Re-encode → Master/Display/Thumbnail) Synchronous ضمن
+        نفس الطلب في v1. HEIC/HEIF مرفوضة صراحةً (§12).
+      x-traceability:
+        requirements: []
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        '201':
+          description: نجحت المعالجة، الأصل بحالة ready
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MediaAssetResponse'
+        '413':
+          description: UPLOAD_TOO_LARGE (تجاوز 10MB)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: IMAGE_PROCESSING_FAILED (صيغة غير مدعومة/أبعاد تتجاوز 8000px/فشل Decode فعلي)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/media/assets/{assetId}:
+    get:
+      operationId: getMediaAsset
+      summary: 'Batch 2 Unit 1: عرض Asset بمعرّفه'
+      x-traceability:
+        requirements: []
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: assetId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: بيانات الأصل
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MediaAssetResponse'
+        '404':
+          description: ASSET_NOT_FOUND
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/media/attachments:
+    post:
+      operationId: createMediaAttachment
+      summary: 'Batch 2 Unit 1 (§6/§7/§15): ربط Asset بسياق Business (Purchase Request/Offer/Inventory Item)'
+      description: >-
+        الحد (5 صور لـPR/Offer، بلا حد لـInventory)، sort_order، والإدراج —
+        كلها تحت Advisory Transaction Lock واحد (namespace='media-binding').
+        Unit 1: التحقق من ownership الفعلي Placeholder (يُستكمَل Unit 2).
+      x-traceability:
+        requirements: []
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MediaAttachmentCreateRequest'
+      responses:
+        '201':
+          description: تم الربط
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MediaAttachmentResponse'
+        '400':
+          description: INVALID_OWNER_TYPE
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: BINDING_FORBIDDEN (ليس uploader، أو لا يملك الكيان المستهدف)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: ASSET_NOT_FOUND
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: ASSET_NOT_READY أو ATTACHMENT_LIMIT_EXCEEDED
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    get:
+      operationId: listMediaAttachments
+      summary: 'Batch 2 Unit 1: قائمة مرفقات Owner محدَّد (Metadata فقط — لا URLs، §9 يستوجب سياق Unit 2)'
+      x-traceability:
+        requirements: []
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: owner_type
+        in: query
+        required: true
+        schema:
+          type: string
+          enum: [purchase_request, offer, inventory_item]
+      - name: owner_ref_id
+        in: query
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: قائمة المرفقات النشطة، مرتَّبة بـsort_order
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/MediaAttachmentResponse'
+        '400':
+          description: INVALID_OWNER_TYPE
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/media/attachments/{attachmentId}/archive:
+    post:
+      operationId: archiveMediaAttachment
+      summary: 'Batch 2 Unit 1 (§7): أرشفة مرفق (قبل Submit فقط — بلا حذف الأصل نفسه)'
+      x-traceability:
+        requirements: []
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: attachmentId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: أُرشِف المرفق
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MediaAttachmentResponse'
+        '404':
+          description: ATTACHMENT_NOT_FOUND
           content:
             application/json:
               schema:
