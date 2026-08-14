@@ -260,3 +260,371 @@ class TestFiveImageLimitConcurrencyOnLivePostgres:
 
         conn_a.close()
         conn_b.close()
+
+
+# ===========================================================================
+# Batch 2 — Unit 2: Ownership الحقيقي + Signed/Public Access + Watermark —
+# على PostgreSQL حي. Fixture مستقلة تمامًا عن app_and_client الأصلية (صفر
+# تعديل عليها — صفر مخاطرة Regression على اختبارات Unit 1 الستة الناجحة
+# فعليًا على GitHub، Run 31797308015).
+# ===========================================================================
+
+from order_repository import PostgresOrderRepository
+from order_service import PurchaseRequest, Offer
+from store_repository import PostgresStoreRepository
+from store_service import Store
+from inventory_item_repository import PostgresInventoryItemRepository
+from inventory_item_service import InventoryItem
+from media_authorization import build_media_ownership_checker, build_media_view_authorization_checker
+
+
+@pytest.fixture
+def unit2_app_and_client(conn, tmp_path):
+    app = FastAPI()
+    app.include_router(auth_router)
+    app.include_router(media_router)
+    app.state.auth_repository = PostgresAuthRepository(conn)
+    app.state.session_repository = PostgresSessionRepository(conn)
+    app.state.media_repository = PostgresMediaRepository(conn)
+    app.state.storage_adapter = LocalStorageAdapter(base_dir=str(tmp_path / "media-test-storage-u2"))
+
+    order_repo = PostgresOrderRepository(conn)
+    store_repo = PostgresStoreRepository(conn)
+    inventory_repo = PostgresInventoryItemRepository(conn)
+    app.state.order_repository = order_repo
+    app.state.store_repository = store_repo
+    app.state.inventory_item_repository = inventory_repo
+    app.state.media_ownership_checker = build_media_ownership_checker(order_repo, store_repo, inventory_repo)
+    app.state.media_view_authorization_checker = build_media_view_authorization_checker(order_repo, store_repo)
+
+    client = TestClient(app, base_url="https://testserver")
+    return app, client, conn
+
+
+def _insert_purchase_request(conn, buyer_user_ref_id: str) -> str:
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO pur.purchase_requests (business_code, buyer_user_ref_id, catalog_part_ref_id, trim_ref_id) "
+        "VALUES (%s, %s, gen_random_uuid(), gen_random_uuid()) RETURNING id",
+        (f"PR-{uuid.uuid4().hex[:20]}", buyer_user_ref_id),
+    )
+    return cur.fetchone()["id"]
+
+
+def _insert_store(conn, owner_user_ref_id: str) -> str:
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO str.stores (owner_user_ref_id, status) VALUES (%s, 'active') RETURNING id",
+        (owner_user_ref_id,),
+    )
+    return cur.fetchone()["id"]
+
+
+def _insert_offer(conn, pr_id: str, seller_store_ref_id: str) -> str:
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO pur.offers (business_code, purchase_request_id, seller_store_ref_id, amount, currency, provides_shipping) "
+        "VALUES (%s, %s, %s, 100.0, 'SAR', false) RETURNING id",
+        (f"OFR-{uuid.uuid4().hex[:20]}", pr_id, seller_store_ref_id),
+    )
+    return cur.fetchone()["id"]
+
+
+def _insert_inventory_item(conn, store_id: str) -> str:
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO ref.ref_values (ref_type, code) VALUES ('part_condition', %s) RETURNING id",
+        (f"new-{uuid.uuid4().hex[:8]}",),
+    )
+    condition_id = cur.fetchone()["id"]
+    cur.execute(
+        "INSERT INTO str.inventory_items (business_code, store_id, catalog_part_ref_id, condition_ref_id, "
+        "pricing_mode, price_amount, price_currency, quantity, status) "
+        "VALUES (%s, %s, gen_random_uuid(), %s, 'fixed_price', 100.0, 'SAR', 5, 'active') RETURNING id",
+        (f"IT-{uuid.uuid4().hex[:12]}", store_id, condition_id),
+    )
+    return cur.fetchone()["id"]
+
+
+class TestUnit2RealOwnershipOnLivePostgres:
+    """§7: Ownership حقيقي عبر Repositories فعلية على PostgreSQL حي."""
+
+    def test_buyer_can_bind_to_own_purchase_request(self, unit2_app_and_client):
+        app, client, conn = unit2_app_and_client
+        buyer_id = _register_and_login(client, conn, f"buyer-u2pg-1-{uuid.uuid4().hex[:8]}@example.com")
+        pr_id = _insert_purchase_request(conn, buyer_id)
+        conn.commit()  # درس Batch 1: تثبيت الإعداد قبل أي عملية تعتمد عليه
+        asset_id = client.post("/api/v1/media/assets", files={"file": ("p.jpg", _jpeg_bytes(), "image/jpeg")}).json()["id"]
+
+        resp = client.post("/api/v1/media/attachments", json={
+            "asset_ref_id": asset_id, "owner_type": "purchase_request", "owner_ref_id": pr_id,
+        })
+        assert resp.status_code == 201, resp.text
+
+    def test_non_buyer_cannot_bind_to_others_purchase_request(self, unit2_app_and_client):
+        app, client, conn = unit2_app_and_client
+        real_buyer_id = _register_and_login(client, conn, f"real-buyer-u2pg-{uuid.uuid4().hex[:8]}@example.com")
+        pr_id = _insert_purchase_request(conn, real_buyer_id)
+        client.post("/api/v1/auth/logout")
+        conn.commit()
+
+        _register_and_login(client, conn, f"impersonator-u2pg-{uuid.uuid4().hex[:8]}@example.com")
+        asset_id = client.post("/api/v1/media/assets", files={"file": ("p.jpg", _jpeg_bytes(), "image/jpeg")}).json()["id"]
+
+        resp = client.post("/api/v1/media/attachments", json={
+            "asset_ref_id": asset_id, "owner_type": "purchase_request", "owner_ref_id": pr_id,
+        })
+        assert resp.status_code == 403
+        assert resp.json()["detail"]["error_code"] == "BINDING_FORBIDDEN"
+
+    def test_seller_can_bind_to_own_offer_via_store_ownership(self, unit2_app_and_client):
+        app, client, conn = unit2_app_and_client
+        seller_id = _register_and_login(client, conn, f"seller-u2pg-1-{uuid.uuid4().hex[:8]}@example.com")
+        store_id = _insert_store(conn, seller_id)
+        pr_id = _insert_purchase_request(conn, str(uuid.uuid4()))
+        offer_id = _insert_offer(conn, pr_id, store_id)
+        conn.commit()
+        asset_id = client.post("/api/v1/media/assets", files={"file": ("p.jpg", _jpeg_bytes(), "image/jpeg")}).json()["id"]
+
+        resp = client.post("/api/v1/media/attachments", json={
+            "asset_ref_id": asset_id, "owner_type": "offer", "owner_ref_id": offer_id,
+        })
+        assert resp.status_code == 201, resp.text
+
+    def test_seller_can_bind_to_own_inventory_item(self, unit2_app_and_client):
+        app, client, conn = unit2_app_and_client
+        seller_id = _register_and_login(client, conn, f"seller-u2pg-2-{uuid.uuid4().hex[:8]}@example.com")
+        store_id = _insert_store(conn, seller_id)
+        item_id = _insert_inventory_item(conn, store_id)
+        conn.commit()
+        asset_id = client.post("/api/v1/media/assets", files={"file": ("p.jpg", _jpeg_bytes(), "image/jpeg")}).json()["id"]
+
+        resp = client.post("/api/v1/media/attachments", json={
+            "asset_ref_id": asset_id, "owner_type": "inventory_item", "owner_ref_id": item_id,
+        })
+        assert resp.status_code == 201, resp.text
+
+
+class TestUnit2ArchiveAuthorizationOnLivePostgres:
+    """البند 4 من الطلب: إثبات صريح أن المالك الصحيح فقط يستطيع الأرشفة، وغير المخوَّل يُرفَض."""
+
+    def test_owner_can_archive_own_purchase_request_attachment(self, unit2_app_and_client):
+        app, client, conn = unit2_app_and_client
+        buyer_id = _register_and_login(client, conn, f"buyer-arc-1-{uuid.uuid4().hex[:8]}@example.com")
+        pr_id = _insert_purchase_request(conn, buyer_id)
+        conn.commit()
+        asset_id = client.post("/api/v1/media/assets", files={"file": ("p.jpg", _jpeg_bytes(), "image/jpeg")}).json()["id"]
+        att_id = client.post("/api/v1/media/attachments", json={
+            "asset_ref_id": asset_id, "owner_type": "purchase_request", "owner_ref_id": pr_id,
+        }).json()["id"]
+
+        resp = client.post(f"/api/v1/media/attachments/{att_id}/archive")
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["status"] == "archived"
+
+    def test_non_owner_cannot_archive_purchase_request_attachment(self, unit2_app_and_client):
+        app, client, conn = unit2_app_and_client
+        buyer_id = _register_and_login(client, conn, f"buyer-arc-2-{uuid.uuid4().hex[:8]}@example.com")
+        pr_id = _insert_purchase_request(conn, buyer_id)
+        asset_id = client.post("/api/v1/media/assets", files={"file": ("p.jpg", _jpeg_bytes(), "image/jpeg")}).json()["id"]
+        att_id = client.post("/api/v1/media/attachments", json={
+            "asset_ref_id": asset_id, "owner_type": "purchase_request", "owner_ref_id": pr_id,
+        }).json()["id"]
+        client.post("/api/v1/auth/logout")
+        conn.commit()
+
+        _register_and_login(client, conn, f"stranger-arc-2-{uuid.uuid4().hex[:8]}@example.com")
+        resp = client.post(f"/api/v1/media/attachments/{att_id}/archive")
+        assert resp.status_code == 403
+        assert resp.json()["detail"]["error_code"] == "ARCHIVE_FORBIDDEN"
+
+    def test_owner_can_archive_own_inventory_item_attachment(self, unit2_app_and_client):
+        app, client, conn = unit2_app_and_client
+        seller_id = _register_and_login(client, conn, f"seller-arc-3-{uuid.uuid4().hex[:8]}@example.com")
+        store_id = _insert_store(conn, seller_id)
+        item_id = _insert_inventory_item(conn, store_id)
+        conn.commit()
+        asset_id = client.post("/api/v1/media/assets", files={"file": ("p.jpg", _jpeg_bytes(), "image/jpeg")}).json()["id"]
+        att_id = client.post("/api/v1/media/attachments", json={
+            "asset_ref_id": asset_id, "owner_type": "inventory_item", "owner_ref_id": item_id,
+        }).json()["id"]
+
+        resp = client.post(f"/api/v1/media/attachments/{att_id}/archive")
+        assert resp.status_code == 200
+
+
+class TestUnit2WatermarkOnLivePostgres:
+    """§9: Watermark فعلي محفوظ على القرص عبر LocalStorageAdapter الحقيقي — لا InMemory."""
+
+    def test_inventory_item_bind_persists_watermarked_display_on_disk(self, unit2_app_and_client):
+        app, client, conn = unit2_app_and_client
+        seller_id = _register_and_login(client, conn, f"seller-wmpg-1-{uuid.uuid4().hex[:8]}@example.com")
+        store_id = _insert_store(conn, seller_id)
+        item_id = _insert_inventory_item(conn, store_id)
+        conn.commit()
+        asset_id = client.post("/api/v1/media/assets", files={"file": ("p.jpg", _jpeg_bytes(1000, 800), "image/jpeg")}).json()["id"]
+        asset_before = app.state.media_repository.get_asset_by_id(asset_id)
+        display_before = app.state.storage_adapter.read(asset_before.storage_key_display)
+
+        client.post("/api/v1/media/attachments", json={
+            "asset_ref_id": asset_id, "owner_type": "inventory_item", "owner_ref_id": item_id,
+        })
+
+        asset_after = app.state.media_repository.get_asset_by_id(asset_id)
+        display_after = app.state.storage_adapter.read(asset_after.storage_key_display)
+        assert display_after != display_before, "الملف الفعلي على القرص يجب أن يتغيَّر بعد Watermark"
+
+        cur = conn.cursor()
+        cur.execute("SELECT checksum, storage_key FROM media.assets WHERE id = %s", (asset_id,))
+        row = cur.fetchone()
+        assert row["storage_key"] is not None, "Master storage_key يجب ألا يتأثر إطلاقًا بتحديث Display/Thumbnail"
+
+    def test_purchase_request_bind_leaves_display_unwatermarked_on_disk(self, unit2_app_and_client):
+        app, client, conn = unit2_app_and_client
+        buyer_id = _register_and_login(client, conn, f"buyer-wmpg-1-{uuid.uuid4().hex[:8]}@example.com")
+        pr_id = _insert_purchase_request(conn, buyer_id)
+        conn.commit()
+        asset_id = client.post("/api/v1/media/assets", files={"file": ("p.jpg", _jpeg_bytes(), "image/jpeg")}).json()["id"]
+        asset_before = app.state.media_repository.get_asset_by_id(asset_id)
+        display_before = app.state.storage_adapter.read(asset_before.storage_key_display)
+
+        client.post("/api/v1/media/attachments", json={
+            "asset_ref_id": asset_id, "owner_type": "purchase_request", "owner_ref_id": pr_id,
+        })
+
+        asset_after = app.state.media_repository.get_asset_by_id(asset_id)
+        display_after = app.state.storage_adapter.read(asset_after.storage_key_display)
+        assert display_after == display_before, "PR: لا Watermark — الملف على القرص يبقى مطابقًا حرفيًا"
+
+
+class TestUnit2AccessPolicyOnLivePostgres:
+    """§9-10: مطابقة حرفية لسياسة الوصول — Public/Watermark لـInventory، Private/no-watermark لـPR/Offer، مصفوفة §10 الكاملة."""
+
+    def test_inventory_item_access_public_and_watermarked_flag(self, unit2_app_and_client):
+        app, client, conn = unit2_app_and_client
+        seller_id = _register_and_login(client, conn, f"seller-accpg-1-{uuid.uuid4().hex[:8]}@example.com")
+        store_id = _insert_store(conn, seller_id)
+        item_id = _insert_inventory_item(conn, store_id)
+        conn.commit()
+        asset_id = client.post("/api/v1/media/assets", files={"file": ("p.jpg", _jpeg_bytes(), "image/jpeg")}).json()["id"]
+        att_id = client.post("/api/v1/media/attachments", json={
+            "asset_ref_id": asset_id, "owner_type": "inventory_item", "owner_ref_id": item_id,
+        }).json()["id"]
+        client.post("/api/v1/auth/logout")
+
+        _register_and_login(client, conn, f"any-viewer-accpg-1-{uuid.uuid4().hex[:8]}@example.com")
+        resp = client.get(f"/api/v1/media/attachments/{att_id}/access")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["public"] is True
+        assert body["watermarked"] is True
+
+    def test_purchase_request_access_private_not_watermarked(self, unit2_app_and_client):
+        app, client, conn = unit2_app_and_client
+        buyer_id = _register_and_login(client, conn, f"buyer-accpg-2-{uuid.uuid4().hex[:8]}@example.com")
+        pr_id = _insert_purchase_request(conn, buyer_id)
+        conn.commit()
+        asset_id = client.post("/api/v1/media/assets", files={"file": ("p.jpg", _jpeg_bytes(), "image/jpeg")}).json()["id"]
+        att_id = client.post("/api/v1/media/attachments", json={
+            "asset_ref_id": asset_id, "owner_type": "purchase_request", "owner_ref_id": pr_id,
+        }).json()["id"]
+
+        resp = client.get(f"/api/v1/media/attachments/{att_id}/access")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["public"] is False
+        assert body["watermarked"] is False
+
+    def test_offer_access_private_not_watermarked(self, unit2_app_and_client):
+        app, client, conn = unit2_app_and_client
+        seller_id = _register_and_login(client, conn, f"seller-accpg-3-{uuid.uuid4().hex[:8]}@example.com")
+        store_id = _insert_store(conn, seller_id)
+        pr_id = _insert_purchase_request(conn, str(uuid.uuid4()))
+        offer_id = _insert_offer(conn, pr_id, store_id)
+        conn.commit()
+        asset_id = client.post("/api/v1/media/assets", files={"file": ("p.jpg", _jpeg_bytes(), "image/jpeg")}).json()["id"]
+        att_id = client.post("/api/v1/media/attachments", json={
+            "asset_ref_id": asset_id, "owner_type": "offer", "owner_ref_id": offer_id,
+        }).json()["id"]
+
+        resp = client.get(f"/api/v1/media/attachments/{att_id}/access")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["public"] is False
+        assert body["watermarked"] is False
+
+    def test_seller_without_active_offer_cannot_access_pr_images(self, unit2_app_and_client):
+        """البند 5: Seller لا يحصل على PR Signed Access لمجرد كونه Seller؛ يلزم Offer فعلي على نفس PR تحديدًا."""
+        app, client, conn = unit2_app_and_client
+        buyer_id = _register_and_login(client, conn, f"buyer-accpg-4-{uuid.uuid4().hex[:8]}@example.com")
+        pr_id = _insert_purchase_request(conn, buyer_id)
+        conn.commit()
+        asset_id = client.post("/api/v1/media/assets", files={"file": ("p.jpg", _jpeg_bytes(), "image/jpeg")}).json()["id"]
+        att_id = client.post("/api/v1/media/attachments", json={
+            "asset_ref_id": asset_id, "owner_type": "purchase_request", "owner_ref_id": pr_id,
+        }).json()["id"]
+        client.post("/api/v1/auth/logout")
+
+        # بائع حقيقي (متجر حقيقي) لكن بلا أي Offer على هذا الـPR تحديدًا
+        seller_id = _register_and_login(client, conn, f"seller-no-offer-accpg-4-{uuid.uuid4().hex[:8]}@example.com")
+        _insert_store(conn, seller_id)
+        conn.commit()
+
+        resp = client.get(f"/api/v1/media/attachments/{att_id}/access")
+        assert resp.status_code == 403, "مجرد كونه بائعًا حقيقيًا بلا Offer فعلي على هذا الطلب لا يكفي (§10)"
+
+    def test_seller_with_active_offer_can_access_pr_images(self, unit2_app_and_client):
+        app, client, conn = unit2_app_and_client
+        buyer_id = _register_and_login(client, conn, f"buyer-accpg-5-{uuid.uuid4().hex[:8]}@example.com")
+        pr_id = _insert_purchase_request(conn, buyer_id)
+        conn.commit()
+        asset_id = client.post("/api/v1/media/assets", files={"file": ("p.jpg", _jpeg_bytes(), "image/jpeg")}).json()["id"]
+        att_id = client.post("/api/v1/media/attachments", json={
+            "asset_ref_id": asset_id, "owner_type": "purchase_request", "owner_ref_id": pr_id,
+        }).json()["id"]
+        client.post("/api/v1/auth/logout")
+
+        seller_id = _register_and_login(client, conn, f"seller-with-offer-accpg-5-{uuid.uuid4().hex[:8]}@example.com")
+        store_id = _insert_store(conn, seller_id)
+        _insert_offer(conn, pr_id, store_id)
+        conn.commit()
+
+        resp = client.get(f"/api/v1/media/attachments/{att_id}/access")
+        assert resp.status_code == 200, "بائع لديه Offer فعلي على هذا الطلب تحديدًا يجب أن يصل"
+
+    def test_offer_access_depends_on_real_seller_store_ownership(self, unit2_app_and_client):
+        """البند 5: Offer access يعتمد على ملكية seller_store_ref_id الفعلية، لا مجرد الدور."""
+        app, client, conn = unit2_app_and_client
+        real_seller_id = _register_and_login(client, conn, f"real-seller-accpg-6-{uuid.uuid4().hex[:8]}@example.com")
+        store_id = _insert_store(conn, real_seller_id)
+        pr_id = _insert_purchase_request(conn, str(uuid.uuid4()))
+        offer_id = _insert_offer(conn, pr_id, store_id)
+        conn.commit()
+        asset_id = client.post("/api/v1/media/assets", files={"file": ("p.jpg", _jpeg_bytes(), "image/jpeg")}).json()["id"]
+        att_id = client.post("/api/v1/media/attachments", json={
+            "asset_ref_id": asset_id, "owner_type": "offer", "owner_ref_id": offer_id,
+        }).json()["id"]
+        client.post("/api/v1/auth/logout")
+
+        # بائع آخر حقيقي، بمتجر مختلف تمامًا — لا علاقة له بهذا العرض
+        other_seller_id = _register_and_login(client, conn, f"other-seller-accpg-6-{uuid.uuid4().hex[:8]}@example.com")
+        _insert_store(conn, other_seller_id)
+        conn.commit()
+
+        resp = client.get(f"/api/v1/media/attachments/{att_id}/access")
+        assert resp.status_code == 403, "بائع آخر لا يملك seller_store_ref_id هذا العرض تحديدًا يُرفَض"
+
+    def test_admin_bypasses_all_private_restrictions(self, unit2_app_and_client):
+        app, client, conn = unit2_app_and_client
+        buyer_id = _register_and_login(client, conn, f"buyer-accpg-7-{uuid.uuid4().hex[:8]}@example.com")
+        pr_id = _insert_purchase_request(conn, buyer_id)
+        conn.commit()
+        asset_id = client.post("/api/v1/media/assets", files={"file": ("p.jpg", _jpeg_bytes(), "image/jpeg")}).json()["id"]
+        att_id = client.post("/api/v1/media/attachments", json={
+            "asset_ref_id": asset_id, "owner_type": "purchase_request", "owner_ref_id": pr_id,
+        }).json()["id"]
+        client.post("/api/v1/auth/logout")
+
+        _register_and_login(client, conn, f"admin-accpg-7-{uuid.uuid4().hex[:8]}@example.com", role="admin")
+        resp = client.get(f"/api/v1/media/attachments/{att_id}/access")
+        assert resp.status_code == 200, "Admin يجب أن يتجاوز كل قيود Private"
