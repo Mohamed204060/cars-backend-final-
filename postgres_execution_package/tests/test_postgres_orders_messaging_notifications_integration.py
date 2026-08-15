@@ -612,6 +612,69 @@ class TestCR022ConditionAndNotesOnLivePostgres:
         assert row["notes"] is None
 
 
+class TestUnit45OpenPurchaseRequestsBrowsingOnLivePostgres:
+    """
+    Unit 4+5 — فجوة حقيقية مكتشَفة: GET /purchase-requests على اتصال حي —
+    يتحقق من صحة نحو list_open_purchase_requests_display الفعلي
+    (WHERE pr.status = 'open' مضافة فوق _DISPLAY_JOIN_SQL القائم بلا
+    تعديل عليه) — لا يكتشفه py_compile ولا InMemory.
+    """
+
+    def test_open_pr_returned_with_resolved_names(self, app_and_client):
+        app, client, conn = app_and_client
+        part_id = _make_approved_part(client, conn)
+        trim_id = _make_valid_trim(client, conn)
+
+        _register_and_login(client, conn, f"buyer-browse-pg-{uuid.uuid4().hex[:8]}@example.com")
+        client.post("/api/v1/purchase-requests", json={"catalog_part_ref_id": part_id, "trim_ref_id": trim_id})
+        client.post("/api/v1/auth/logout")
+
+        _register_and_login(client, conn, f"seller-browse-pg-{uuid.uuid4().hex[:8]}@example.com",
+                             role="individual_seller")
+        resp = client.get("/api/v1/purchase-requests")
+        assert resp.status_code == 200, resp.text
+        matching = [i for i in resp.json()["items"] if i["trim_ref_id"] == trim_id]
+        assert len(matching) == 1
+        assert matching[0]["status"] == "open"
+
+    def test_under_review_pr_excluded_on_live_postgres(self, app_and_client):
+        app, client, conn = app_and_client
+        part_id = _make_approved_part(client, conn)
+        trim_id = _make_valid_trim(client, conn)
+
+        _register_and_login(client, conn, f"buyer-browse-pg2-{uuid.uuid4().hex[:8]}@example.com")
+        pr_id = client.post("/api/v1/purchase-requests",
+                             json={"catalog_part_ref_id": part_id, "trim_ref_id": trim_id}).json()["id"]
+        client.post("/api/v1/auth/logout")
+
+        _register_and_login(client, conn, f"seller-browse-pg2-{uuid.uuid4().hex[:8]}@example.com",
+                             role="individual_seller")
+        client.post("/api/v1/store/stores", json={})
+        offer_resp = client.post(f"/api/v1/purchase-requests/{pr_id}/offers",
+                                  json={"amount": 150.0, "currency": "SAR", "provides_shipping": False})
+        assert offer_resp.status_code == 201, offer_resp.text
+
+        resp = client.get("/api/v1/purchase-requests")
+        assert resp.status_code == 200, resp.text
+        matching = [i for i in resp.json()["items"] if i["id"] == pr_id]
+        assert matching == []
+
+    def test_pagination_total_items_accurate(self, app_and_client):
+        app, client, conn = app_and_client
+        part_id = _make_approved_part(client, conn)
+        trim_id = _make_valid_trim(client, conn)
+
+        _register_and_login(client, conn, f"buyer-browse-pg3-{uuid.uuid4().hex[:8]}@example.com")
+        client.post("/api/v1/purchase-requests", json={"catalog_part_ref_id": part_id, "trim_ref_id": trim_id})
+        client.post("/api/v1/purchase-requests", json={"catalog_part_ref_id": part_id, "trim_ref_id": trim_id})
+
+        resp = client.get("/api/v1/purchase-requests", params={"page": 1, "page_size": 1})
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert len(body["items"]) == 1
+        assert body["pagination"]["total_items"] >= 2
+
+
 class TestBatch1PurchaseRequestVctIntegrationOnLivePostgres:
     """Approved VCT Design Baseline §23: Purchase Request مرتبط بـVCT حقيقي — على اتصال حي."""
 

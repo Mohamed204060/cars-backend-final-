@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: منصة قطع غيار السيارات - Auto Parts Marketplace API
-  version: 1.19.0
+  version: 1.20.0
   description: 'مواصفة API تنفيذية، تغطي 15 عملية (Operations) عبر 14 مسارًا (Paths): الواجهات التمثيلية
     الخمس الأصلية الموثّقة بالتفصيل في التصميم التفصيلي (الحزمة 2)، بالإضافة إلى 5 عمليات خدمة Auth (اعتماد
     Contract Extension & Implementation Plan): تسجيل خروج، عرض/إضافة/إزالة وسائل الهوية، وعرض مزوّدي الهوية
@@ -2973,6 +2973,40 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+    get:
+      operationId: listOpenPurchaseRequests
+      summary: تصفح طلبات الشراء المفتوحة (اكتشاف البائع، REQ-PUR-011)
+      description: 'Unit 4+5 — فجوة حقيقية مكتشَفة: تصفح عام لكل البائعين المسجَّلين (Scoping بالجلسة فقط،
+        بلا فحص دور ولا اشتراط ملكية متجر للتصفح نفسه) لطلبات الشراء بحالة open حصرًا، عبر نفس Read Model
+        المحلول أسماؤه المستخدَم في GET /purchase-requests/mine/display (بلا تعديل عليه). يمكّن البائع من
+        تحديد طلب يقدِّم عليه عرضًا عبر POST /purchase-requests/{requestId}/offers القائم.'
+      x-traceability:
+        requirements:
+        - REQ-PUR-011
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: page
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          default: 1
+      - name: page_size
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          default: 20
+      responses:
+        '200':
+          description: طلبات الشراء المفتوحة مع أسماء محلولة
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurchaseRequestDisplayListResponse'
   /api/v1/purchase-requests/{prId}:
     get:
       operationId: getPurchaseRequest
@@ -3419,6 +3453,35 @@ paths:
                 $ref: '#/components/schemas/StoreListResponse'
         '403':
           description: غير مدير نظام أو مشرف
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/store/stores/mine:
+    get:
+      operationId: getMyStore
+      summary: عرض متجر البائع الحالي (اشتقاق من الجلسة)
+      description: 'Unit 4+5 — فجوة حقيقية مكتشَفة: اشتقاق store_id لصاحب الجلسة الحالي مباشرة
+        (get_store_by_owner_id القائمة فعلًا، بلا تعديل عليها)، بنفس نمط الاشتقاق المعتمَد في
+        POST /purchase-requests/{requestId}/offers. مُسجَّل قبل GET /store/stores/{storeId} صراحةً
+        لتفادي التقاط ''mine'' كمعرّف متجر حرفي.'
+      x-traceability:
+        requirements:
+        - REQ-STR-001
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      responses:
+        '200':
+          description: متجر المستخدم الحالي
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StoreResponse'
+        '404':
+          description: لا يوجد متجر مملوك لهذا المستخدم
           content:
             application/json:
               schema:

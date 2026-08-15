@@ -59,6 +59,55 @@ class TestCreateAndGetStore:
         assert resp.status_code == 404
 
 
+class TestGetMyStore:
+    """Unit 4+5 — فجوة حقيقية مكتشَفة: GET /stores/mine (اشتقاق متجر البائع الحالي من الجلسة)."""
+
+    def test_returns_own_store(self, app_and_client):
+        app, client = app_and_client
+        user_id = _login_as(app, client, "mystore1@example.com")
+        store_id = client.post("/api/v1/store/stores", json={}).json()["id"]
+
+        resp = client.get("/api/v1/store/stores/mine")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["id"] == store_id
+        assert body["owner_user_ref_id"] == user_id
+
+    def test_404_when_no_store_owned(self, app_and_client):
+        app, client = app_and_client
+        _login_as(app, client, "mystore2@example.com")
+        resp = client.get("/api/v1/store/stores/mine")
+        assert resp.status_code == 404
+
+    def test_requires_authentication(self, app_and_client):
+        app, client = app_and_client
+        resp = client.get("/api/v1/store/stores/mine")
+        assert resp.status_code == 401
+
+    def test_mine_not_captured_as_store_id_route_collision(self, app_and_client):
+        """يجب ألا يُطابِق GET /stores/{store_id} كلمة 'mine' — تحقُّق صريح من ترتيب التسجيل."""
+        app, client = app_and_client
+        user_id = _login_as(app, client, "mystore3@example.com")
+        client.post("/api/v1/store/stores", json={})
+
+        resp = client.get("/api/v1/store/stores/mine")
+        assert resp.status_code == 200
+        assert resp.json()["owner_user_ref_id"] == user_id
+
+    def test_scoped_to_current_user_not_other_sellers(self, app_and_client):
+        app, client = app_and_client
+        _login_as(app, client, "mystore4a@example.com")
+        store_a_id = client.post("/api/v1/store/stores", json={}).json()["id"]
+        client.post("/api/v1/auth/logout")
+
+        _login_as(app, client, "mystore4b@example.com")
+        store_b_id = client.post("/api/v1/store/stores", json={}).json()["id"]
+        resp = client.get("/api/v1/store/stores/mine")
+        assert resp.status_code == 200
+        assert resp.json()["id"] == store_b_id
+        assert resp.json()["id"] != store_a_id
+
+
 class TestStoreStatusChangeAuthorization:
     """REQ-STR-004: مدير النظام أو المشرف فقط — لا مالك المتجر نفسه."""
 

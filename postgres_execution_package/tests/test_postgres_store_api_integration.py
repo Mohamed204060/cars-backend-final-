@@ -99,3 +99,23 @@ class TestStoreLifecycleOnLivePostgres:
                             json={"new_owner_user_ref_id": new_owner_id})
         assert resp.status_code == 200
         assert resp.json()["owner_user_ref_id"] == new_owner_id
+
+
+class TestGetMyStoreOnLivePostgres:
+    """Unit 4+5 — فجوة حقيقية مكتشَفة: GET /stores/mine على Postgres حي (idx_stores_owner)."""
+
+    def test_returns_own_store(self, app_and_client):
+        app, client, conn = app_and_client
+        user_id = _register_and_login(client, conn, f"mystore{uuid.uuid4().hex[:6]}@example.com")
+        store_id = client.post("/api/v1/store/stores", json={}).json()["id"]
+
+        resp = client.get("/api/v1/store/stores/mine")
+        assert resp.status_code == 200
+        assert resp.json()["id"] == store_id
+        assert resp.json()["owner_user_ref_id"] == user_id
+
+    def test_404_when_no_store_owned(self, app_and_client):
+        app, client, conn = app_and_client
+        _register_and_login(client, conn, f"mystore{uuid.uuid4().hex[:6]}@example.com")
+        resp = client.get("/api/v1/store/stores/mine")
+        assert resp.status_code == 404

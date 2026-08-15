@@ -770,3 +770,87 @@ class TestBatch1PurchaseRequestVctIntegration:
         matching = [i for i in resp.json()["items"] if i["id"] == old_style_pr.id]
         assert len(matching) == 1
         assert matching[0]["trim_model_year_ref_id"] is None
+
+
+class TestUnit45OpenPurchaseRequestsBrowsing:
+    """
+    Unit 4+5 — فجوة حقيقية مكتشَفة: GET /purchase-requests لتصفح البائع
+    للطلبات المفتوحة (REQ-PUR-011)، عبر Read Model المحلول (نفس بنية
+    /purchase-requests/mine/display)، مُصفّاة لحالة 'open' حصرًا.
+    """
+
+    def test_open_pr_visible_to_other_authenticated_user(self, app_and_client):
+        app, client = app_and_client
+        part_id = _make_approved_part(app, client)
+        app.state.order_repository.set_part_name(part_id, "طرمبة بنزين")
+        app.state.order_repository.set_trim_vehicle_info(
+            "trim-1", "model-1", "كامري", "mfr-1", "تويوتا",
+        )
+        _login_as(app, client, "buyer-browse-1@example.com")
+        client.post("/api/v1/purchase-requests", json={"catalog_part_ref_id": part_id, "trim_ref_id": "trim-1"})
+        client.post("/api/v1/auth/logout")
+
+        _login_as(app, client, "seller-browse-1@example.com", role="individual_seller")
+        resp = client.get("/api/v1/purchase-requests")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["pagination"]["total_items"] == 1
+        item = body["items"][0]
+        assert item["part_name"] == "طرمبة بنزين"
+        assert item["manufacturer_name"] == "تويوتا"
+        assert item["status"] == "open"
+
+    def test_under_review_pr_excluded(self, app_and_client):
+        """بمجرد استقبال أول عرض تنتقل الحالة لـunder_review فتختفي من قائمة التصفح (REQ-PUR-017 سياق مشابه)."""
+        app, client = app_and_client
+        part_id = _make_approved_part(app, client)
+        _login_as(app, client, "buyer-browse-2@example.com")
+        pr_id = client.post("/api/v1/purchase-requests",
+                             json={"catalog_part_ref_id": part_id, "trim_ref_id": "trim-1"}).json()["id"]
+        client.post("/api/v1/auth/logout")
+
+        _login_as(app, client, "seller-browse-2@example.com", role="individual_seller")
+        _make_own_store(client)
+        client.post(f"/api/v1/purchase-requests/{pr_id}/offers",
+                    json={"amount": 100.0, "currency": "SAR", "provides_shipping": True})
+
+        resp = client.get("/api/v1/purchase-requests")
+        assert resp.json()["pagination"]["total_items"] == 0
+
+    def test_cancelled_pr_excluded(self, app_and_client):
+        app, client = app_and_client
+        part_id = _make_approved_part(app, client)
+        _login_as(app, client, "buyer-browse-3@example.com")
+        pr_id = client.post("/api/v1/purchase-requests",
+                             json={"catalog_part_ref_id": part_id, "trim_ref_id": "trim-1"}).json()["id"]
+        client.post(f"/api/v1/purchase-requests/{pr_id}/cancel")
+        client.post("/api/v1/auth/logout")
+
+        _login_as(app, client, "seller-browse-3@example.com", role="individual_seller")
+        resp = client.get("/api/v1/purchase-requests")
+        assert resp.json()["pagination"]["total_items"] == 0
+
+    def test_own_open_pr_visible_to_buyer_too_no_role_check(self, app_and_client):
+        """لا فحص دور — Scoping بالجلسة فقط، حتى المشتري صاحب الطلب يراه في قائمة التصفح."""
+        app, client = app_and_client
+        part_id = _make_approved_part(app, client)
+        _login_as(app, client, "buyer-browse-4@example.com")
+        client.post("/api/v1/purchase-requests", json={"catalog_part_ref_id": part_id, "trim_ref_id": "trim-1"})
+
+        resp = client.get("/api/v1/purchase-requests")
+        assert resp.status_code == 200
+        assert resp.json()["pagination"]["total_items"] == 1
+
+    def test_requires_authentication(self, app_and_client):
+        app, client = app_and_client
+        resp = client.get("/api/v1/purchase-requests")
+        assert resp.status_code == 401
+
+    def test_no_buyer_identity_leak(self, app_and_client):
+        app, client = app_and_client
+        part_id = _make_approved_part(app, client)
+        _login_as(app, client, "buyer-browse-5@example.com")
+        client.post("/api/v1/purchase-requests", json={"catalog_part_ref_id": part_id, "trim_ref_id": "trim-1"})
+
+        body_text = client.get("/api/v1/purchase-requests").text
+        assert "buyer_user_ref_id" not in body_text
