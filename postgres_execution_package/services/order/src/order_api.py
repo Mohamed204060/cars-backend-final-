@@ -33,6 +33,7 @@ from order_service import (
     get_purchase_request_display_via_repository,
     list_my_purchase_requests_via_repository,
     list_my_purchase_requests_display_via_repository,
+    list_open_purchase_requests_display_via_repository,
     list_purchase_request_offers_via_repository,
     submit_offer_via_repository,
     withdraw_offer_via_repository,
@@ -233,6 +234,46 @@ def create_purchase_request(
     except InvalidPurchaseRequestNotesError as exc:
         raise error(correlation_id, status.HTTP_400_BAD_REQUEST, "NOTES_TOO_LONG", str(exc))
     return _pr_response(pr)
+
+
+@router.get("/purchase-requests", response_model=PurchaseRequestDisplayListResponse)
+def list_open_purchase_requests(
+    correlation_id: str = Depends(get_correlation_id),
+    current_session: Session = Depends(get_current_session),
+    order_repo=Depends(get_order_repository),
+    page: int = 1,
+    page_size: int = 20,
+):
+    """
+    Unit 4+5 — فجوة حقيقية مكتشَفة (REQ-PUR-011): تصفح البائع للطلبات
+    المفتوحة (status='open' حصرًا) عبر Read Model المحلول (نفس عقد
+    /purchase-requests/mine/display)، ليتمكَّن من تقديم عرض (submit_offer)
+    على طلب لم يُنشئه هو. Scoping بالجلسة فقط (sessionAuth) — لا فحص دور
+    ولا اشتراط ملكية متجر للتصفح نفسه (الاشتراط يبقى عند تقديم العرض،
+    كما في submit_offer الحالي). مسار مستقل تمامًا عن POST بنفس الجذر
+    وعن GET /purchase-requests/mine — بلا أي تعديل على أي منهما.
+    """
+    items, total = list_open_purchase_requests_display_via_repository(
+        order_repo, page=page, page_size=page_size,
+    )
+    return PurchaseRequestDisplayListResponse(
+        items=[
+            PurchaseRequestDisplayResponse(
+                id=i.id, business_code=i.business_code, status=i.status,
+                created_at=i.created_at.isoformat(),
+                catalog_part_ref_id=i.catalog_part_ref_id, part_name=i.part_name,
+                trim_ref_id=i.trim_ref_id, trim_name=i.trim_name,
+                model_id=i.model_id, model_name=i.model_name,
+                manufacturer_id=i.manufacturer_id, manufacturer_name=i.manufacturer_name,
+                generation_id=i.generation_id, generation_name=i.generation_name,
+                trim_model_year_ref_id=i.trim_model_year_ref_id, model_year=i.model_year,
+                condition_ref_id=i.condition_ref_id, condition_code=i.condition_code,
+                notes=i.notes,
+            )
+            for i in items
+        ],
+        pagination=PaginationMeta(page=page, page_size=page_size, total_items=total),
+    )
 
 
 @router.get("/purchase-requests/mine", response_model=PurchaseRequestListResponse)
