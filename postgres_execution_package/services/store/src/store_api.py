@@ -107,6 +107,27 @@ def create_store(
     return _to_response(store)
 
 
+@router.get("/stores/mine", response_model=StoreResponse)
+def get_my_store(
+    correlation_id: str = Depends(get_correlation_id),
+    current_session: Session = Depends(get_current_session),
+    store_repo=Depends(get_store_repository),
+):
+    """
+    Unit 4+5 — فجوة حقيقية مكتشَفة: اشتقاق متجر البائع الحالي من الجلسة
+    مباشرة (get_store_by_owner_id القائمة فعلًا، بلا تعديل عليها)، بنفس
+    نمط اشتقاق store_id في submit_offer/withdraw_offer (order_api.py) —
+    بدل تكرار ذلك الاشتقاق يدويًا في كل مستهلك Frontend. يجب تسجيله قبل
+    GET /stores/{store_id} صراحةً لتفادي التقاط 'mine' كمعرّف متجر حرفي
+    (Route Collision).
+    """
+    store = store_repo.get_store_by_owner_id(current_session.user_id)
+    if store is None:
+        raise error(correlation_id, status.HTTP_404_NOT_FOUND, "STORE_NOT_FOUND",
+                    "لا يوجد متجر مملوك لهذا المستخدم.")
+    return _to_response(store)
+
+
 @router.get("/stores/{store_id}", response_model=None)
 def get_store(
     store_id: str,
