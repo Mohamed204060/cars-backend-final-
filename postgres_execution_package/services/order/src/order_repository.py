@@ -83,6 +83,21 @@ class OrderRepository(ABC):
                                                     ) -> "tuple[List[Offer], int]":
         raise NotImplementedError
 
+    # -----------------------------------------------------------------
+    # Unit 4+5: فجوة حقيقية مكتشَفة (تصفح البائع للطلبات المفتوحة) — لا
+    # تعديل على أي طريقة أعلاه ولا على list_purchase_requests_display_for_buyer.
+    # -----------------------------------------------------------------
+
+    @abstractmethod
+    def list_open_purchase_requests_display(self, page: int, page_size: int) -> "tuple[list, int]":
+        """
+        نفس Read Model لـlist_purchase_requests_display_for_buyer (PurchaseRequestDisplayView)،
+        لكن مُصفّاة لحالة status='open' حصرًا وبلا فلترة بمشترٍ — تصفح عام
+        لكل البائعين المسجَّلين (Scoping بالجلسة فقط عند طبقة الـAPI، لا
+        فحص دور). ORDER BY created_at DESC (الأحدث أولًا).
+        """
+        raise NotImplementedError
+
 
 class PostgresOrderRepository(OrderRepository):
     """تنفيذ فعلي عبر PostgreSQL وفق مخطط 010_pur.sql. غير مختبَر على اتصال حي."""
@@ -386,6 +401,42 @@ class PostgresOrderRepository(OrderRepository):
             rows = cur.fetchall()
         return [self._row_to_offer(r) for r in rows], total
 
+    def list_open_purchase_requests_display(self, page: int, page_size: int):
+        """
+        Unit 4+5 — فجوة حقيقية مكتشَفة: نفس _DISPLAY_JOIN_SQL تمامًا
+        (المستخدَم في list_purchase_requests_display_for_buyer وget_purchase_request_display_by_id
+        أعلاه)، بلا تعديل عليه، مع WHERE pr.status = 'open' بدل الفلترة
+        بمشترٍ. يعتمد على idx_purchase_requests_status.
+        """
+        offset = (page - 1) * page_size
+        params = {"limit": page_size, "offset": offset}
+        with self._connection.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) AS total FROM pur.purchase_requests WHERE status = 'open'", {}
+            )
+            total = cur.fetchone()["total"]
+            cur.execute(
+                f"SELECT {self._DISPLAY_JOIN_SQL} WHERE pr.status = 'open' "
+                f"ORDER BY pr.created_at DESC LIMIT %(limit)s OFFSET %(offset)s",
+                params,
+            )
+            rows = cur.fetchall()
+        items = [
+            PurchaseRequestDisplayView(
+                id=r["id"], business_code=r["business_code"], status=r["status"], created_at=r["created_at"],
+                catalog_part_ref_id=r["catalog_part_ref_id"], part_name=r["part_name"],
+                trim_ref_id=r["trim_ref_id"], trim_name=r["trim_name"],
+                model_id=r["model_id"], model_name=r["model_name"],
+                manufacturer_id=r["manufacturer_id"], manufacturer_name=r["manufacturer_name"],
+                generation_id=r["generation_id"], generation_name=r["generation_name"],
+                trim_model_year_ref_id=r["trim_model_year_ref_id"], model_year=r["model_year"],
+                condition_ref_id=r["condition_ref_id"], condition_code=r["condition_code"],
+                notes=r["notes"],
+            )
+            for r in rows
+        ]
+        return items, total
+
 
 class InMemoryOrderRepository(OrderRepository):
     """تنفيذ وهمي للاختبار فقط. لا دالة حذف هنا أيضًا، عمدًا."""
@@ -543,3 +594,36 @@ class InMemoryOrderRepository(OrderRepository):
         total = len(items)
         start = (page - 1) * page_size
         return items[start:start + page_size], total
+
+    def list_open_purchase_requests_display(self, page: int, page_size: int):
+        """Unit 4+5: نفس منطق list_purchase_requests_display_for_buyer أعلاه حرفيًا، بلا فلترة بمشترٍ، مُصفّاة لـstatus='open' فقط."""
+        prs = [pr for pr in self._prs.values() if pr.status == "open"]
+        prs.sort(key=lambda pr: self._pr_created_at.get(pr.id, self._clock_base), reverse=True)
+        total = len(prs)
+        start = (page - 1) * page_size
+        page_prs = prs[start:start + page_size]
+
+        items = []
+        for pr in page_prs:
+            model_id = model_name = manufacturer_id = manufacturer_name = None
+            generation_id = generation_name = trim_name = None
+            if pr.trim_ref_id in self._trim_vehicle_info:
+                (model_id, model_name, manufacturer_id, manufacturer_name,
+                 generation_id, generation_name, trim_name) = self._trim_vehicle_info[pr.trim_ref_id]
+            model_year = self._trim_model_years_lookup.get(pr.trim_model_year_ref_id) \
+                if pr.trim_model_year_ref_id else None
+            condition_code = self._condition_codes.get(pr.condition_ref_id) if pr.condition_ref_id else None
+            items.append(PurchaseRequestDisplayView(
+                id=pr.id, business_code=pr.business_code, status=pr.status,
+                created_at=self._pr_created_at.get(pr.id, self._clock_base),
+                catalog_part_ref_id=pr.catalog_part_ref_id,
+                part_name=self._part_names.get(pr.catalog_part_ref_id),
+                trim_ref_id=pr.trim_ref_id, trim_name=trim_name,
+                model_id=model_id, model_name=model_name,
+                manufacturer_id=manufacturer_id, manufacturer_name=manufacturer_name,
+                generation_id=generation_id, generation_name=generation_name,
+                trim_model_year_ref_id=pr.trim_model_year_ref_id, model_year=model_year,
+                condition_ref_id=pr.condition_ref_id, condition_code=condition_code,
+                notes=pr.notes,
+            ))
+        return items, total

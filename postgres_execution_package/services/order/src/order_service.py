@@ -409,6 +409,18 @@ def get_purchase_request_display_via_repository(repository, pr_id: str):
     return repository.get_purchase_request_display_by_id(pr_id)
 
 
+def list_open_purchase_requests_display_via_repository(repository, page: int, page_size: int):
+    """
+    Unit 4+5 — فجوة حقيقية مكتشَفة (تصفح البائع للطلبات المفتوحة، REQ-PUR-011):
+    نفس Read Model تمامًا (PurchaseRequestDisplayView) مثل
+    list_my_purchase_requests_display_via_repository، لكن بلا تصفية بمشترٍ
+    محدَّد — مُصفّاة حصرًا لحالة 'open' (طلبات لم تستقبل عرضًا مقبولًا بعد
+    ولم تُغلَق). طبقة تنسيق رقيقة فقط؛ كل منطق الحلّ (JOINs) في Repository،
+    بنفس المبدأ المعتمَد أعلاه.
+    """
+    return repository.list_open_purchase_requests_display(page, page_size)
+
+
 def list_purchase_request_offers_via_repository(repository, pr_id: str, requester_user_ref_id: str,
                                                  requester_store_id: Optional[str],
                                                  status: Optional[str], page: int, page_size: int):
