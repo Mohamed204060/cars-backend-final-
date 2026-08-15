@@ -282,6 +282,69 @@ jobs:
             --junitxml="../$EVIDENCE_DIR/search-integration-tests.xml" \
             2>&1 | tee "../$EVIDENCE_DIR/search-integration-tests.log"
 
+      - name: Diagnose /stores/mine route resolution (Store REST API root-cause)
+        run: |
+          set -euo pipefail
+          {
+            echo "=== Git checkout ==="
+            git rev-parse HEAD
+
+            echo "=== all store_api.py files ==="
+            find . -type f -name 'store_api.py' -print -exec sha256sum {} \;
+
+            echo "=== expected file ==="
+            sha256sum postgres_execution_package/services/store/src/store_api.py
+
+            cd postgres_execution_package
+
+            python - <<'PY'
+          import importlib.util
+          import hashlib
+          import pathlib
+          import sys
+
+          # حمّل conftest نفسه لتطبيق sys.path الحقيقي الذي يستخدمه pytest
+          p = pathlib.Path("tests/conftest.py").resolve()
+          spec = importlib.util.spec_from_file_location("ci_conftest", p)
+          mod = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(mod)
+
+          import store_api
+
+          print("store_api.__file__ =", store_api.__file__)
+          path = pathlib.Path(store_api.__file__).resolve()
+          print("store_api.sha256 =", hashlib.sha256(path.read_bytes()).hexdigest())
+
+          print("=== sys.path ===")
+          for x in sys.path:
+              print(x)
+
+          print("=== store_router.routes ===")
+          for i, route in enumerate(store_api.router.routes):
+              print(
+                  i,
+                  sorted(getattr(route, "methods", []) or []),
+                  getattr(route, "path", None),
+                  getattr(getattr(route, "endpoint", None), "__name__", None),
+              )
+
+          from fastapi import FastAPI
+          app = FastAPI()
+          app.include_router(store_api.router)
+
+          print("=== app.routes after include_router ===")
+          for i, route in enumerate(app.routes):
+              path_value = getattr(route, "path", "")
+              if path_value.startswith("/api/v1/store"):
+                  print(
+                      i,
+                      sorted(getattr(route, "methods", []) or []),
+                      path_value,
+                      getattr(getattr(route, "endpoint", None), "__name__", None),
+                  )
+          PY
+          } 2>&1 | tee "$EVIDENCE_DIR/store-api-route-diagnostic.log"
+
       - name: Run Store REST API unit tests
         working-directory: postgres_execution_package
         run: |
