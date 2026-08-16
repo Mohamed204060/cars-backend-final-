@@ -424,6 +424,38 @@ jobs:
             --junitxml="../$EVIDENCE_DIR/sub-cnt-sup-integration-tests.xml" \
             2>&1 | tee "../$EVIDENCE_DIR/sub-cnt-sup-integration-tests.log"
 
+      - name: Run AUD REST API unit tests (Batch 3A Slice 1)
+        working-directory: postgres_execution_package
+        run: |
+          set -euo pipefail
+          python -m pytest tests/test_aud_api.py -vv \
+            --junitxml="../$EVIDENCE_DIR/aud-api-tests.xml" \
+            2>&1 | tee "../$EVIDENCE_DIR/aud-api-tests.log"
+
+      - name: Run ANA REST API unit tests (Batch 3A Slice 1)
+        working-directory: postgres_execution_package
+        run: |
+          set -euo pipefail
+          python -m pytest tests/test_ana_api.py -vv \
+            --junitxml="../$EVIDENCE_DIR/ana-api-tests.xml" \
+            2>&1 | tee "../$EVIDENCE_DIR/ana-api-tests.log"
+
+      - name: Run AUD REST API integration tests on live PostgreSQL (Batch 3A Slice 1)
+        working-directory: postgres_execution_package
+        run: |
+          set -euo pipefail
+          python -m pytest tests/test_postgres_aud_api_integration.py -vv \
+            --junitxml="../$EVIDENCE_DIR/aud-integration-tests.xml" \
+            2>&1 | tee "../$EVIDENCE_DIR/aud-integration-tests.log"
+
+      - name: Run ANA REST API integration tests on live PostgreSQL (Batch 3A Slice 1)
+        working-directory: postgres_execution_package
+        run: |
+          set -euo pipefail
+          python -m pytest tests/test_postgres_ana_api_integration.py -vv \
+            --junitxml="../$EVIDENCE_DIR/ana-integration-tests.xml" \
+            2>&1 | tee "../$EVIDENCE_DIR/ana-integration-tests.log"
+
       - name: Run full regression (361 tests)
         run: |
           set -euo pipefail
