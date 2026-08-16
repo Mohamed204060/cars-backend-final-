@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: منصة قطع غيار السيارات - Auto Parts Marketplace API
-  version: 1.20.0
+  version: 1.21.1
   description: 'مواصفة API تنفيذية، تغطي 15 عملية (Operations) عبر 14 مسارًا (Paths): الواجهات التمثيلية
     الخمس الأصلية الموثّقة بالتفصيل في التصميم التفصيلي (الحزمة 2)، بالإضافة إلى 5 عمليات خدمة Auth (اعتماد
     Contract Extension & Implementation Plan): تسجيل خروج، عرض/إضافة/إزالة وسائل الهوية، وعرض مزوّدي الهوية
@@ -1821,7 +1821,298 @@ components:
             $ref: '#/components/schemas/PurchaseRequestDisplayResponse'
         pagination:
           $ref: '#/components/schemas/PaginationMeta'
+    AuditEventResponse:
+      type: object
+      description: 'Batch 3A Slice 1: يطابق aud.events (004_aud.sql، مغلَق سلفًا) حرفيًا — لا Endpoint للإنشاء
+        أو التعديل أو الحذف؛ القراءة فقط لمدير النظام (REQ-AUD-001..012).'
+      properties:
+        id:
+          type: string
+        log_type:
+          type: string
+          enum:
+          - general
+          - security
+          - administrative
+        event_name:
+          type: string
+        correlation_id:
+          type: string
+          nullable: true
+        actor_ref_id:
+          type: string
+          nullable: true
+        occurred_at_utc:
+          type: string
+          format: date-time
+        before_value:
+          type: object
+          nullable: true
+        after_value:
+          type: object
+          nullable: true
+        reason:
+          type: string
+          nullable: true
+        metadata:
+          type: object
+          nullable: true
+    AuditEventListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AuditEventResponse'
+        pagination:
+          $ref: '#/components/schemas/PaginationMeta'
+    AnalyticsEventCreateRequest:
+      type: object
+      description: 'Batch 3A Slice 1 (§32): event_type يجب أن يكون ضمن قائمة معتمَدة مسبقًا في ana_service.py
+        (ALLOWED_EVENT_TYPES) — 400 INVALID_EVENT_TYPE غير ذلك.'
+      required:
+      - event_type
+      properties:
+        event_type:
+          type: string
+        context_type:
+          type: string
+          nullable: true
+        context_ref_id:
+          type: string
+          nullable: true
+        metadata:
+          type: object
+          nullable: true
+    AnalyticsEventResponse:
+      type: object
+      properties:
+        id:
+          type: string
+        event_type:
+          type: string
+        occurred_at_utc:
+          type: string
+          format: date-time
+        actor_ref_id:
+          type: string
+          nullable: true
+        session_ref_id:
+          type: string
+          nullable: true
+        context_type:
+          type: string
+          nullable: true
+        context_ref_id:
+          type: string
+          nullable: true
+        correlation_id:
+          type: string
+          nullable: true
+        metadata:
+          type: object
+          nullable: true
+    AnalyticsEventListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AnalyticsEventResponse'
+        pagination:
+          $ref: '#/components/schemas/PaginationMeta'
 paths:
+  /api/v1/audit/events:
+    get:
+      operationId: listAuditEvents
+      summary: تصفح سجل التدقيق (مدير النظام حصريًا)
+      description: 'Batch 3A Slice 1 — REQ-AUD-004/009: لا يوجد أي Endpoint لإنشاء أو تعديل أو حذف سجلات
+        التدقيق؛ الكتابة داخلية فقط عبر كود كل Domain (auth_service.build_security_audit_event،
+        store_service.build_administrative_audit_event، وما شابه). قرار حاكم صريح: حتى الإداري المخوَّل
+        لا يستطيع إدخال سجل تدقيق يدويًا من الواجهة.'
+      x-traceability:
+        requirements:
+        - REQ-AUD-004
+        - REQ-AUD-009
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: log_type
+        in: query
+        schema:
+          type: string
+          enum:
+          - general
+          - security
+          - administrative
+      - name: event_name
+        in: query
+        schema:
+          type: string
+      - name: actor_ref_id
+        in: query
+        schema:
+          type: string
+      - name: date_from
+        in: query
+        schema:
+          type: string
+          format: date-time
+      - name: date_to
+        in: query
+        schema:
+          type: string
+          format: date-time
+      - name: page
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          default: 1
+      - name: page_size
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 20
+      responses:
+        '200':
+          description: سجلات التدقيق المطابقة للفلاتر
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditEventListResponse'
+        '400':
+          description: log_type غير معروف
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: لا جلسة صالحة
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: يتطلب صلاحية مدير النظام
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/analytics/events:
+    post:
+      operationId: recordAnalyticsEvent
+      summary: تسجيل حدث تحليلي (Analytics Event Foundation، §32)
+      description: 'Batch 3A Slice 1: جلسة اختيارية عمدًا — أحداث كثيرة (بحث/تصفح) تحدث قبل تسجيل الدخول.
+        event_type يجب أن يكون ضمن قائمة معتمَدة (ALLOWED_EVENT_TYPES في ana_service.py)؛ لا Event Sourcing،
+        خفيفة وموجَّهة للتقارير فقط.'
+      x-traceability:
+        requirements: []
+        decisions: []
+      security: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AnalyticsEventCreateRequest'
+      responses:
+        '201':
+          description: سُجِّل الحدث
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnalyticsEventResponse'
+        '400':
+          description: event_type غير معروف أو metadata كبيرة جدًا
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    get:
+      operationId: listAnalyticsEvents
+      summary: تصفح الأحداث التحليلية (مدير النظام حصريًا)
+      description: 'Batch 3A Slice 1: لأغراض المراجعة/التصحيح الآن؛ لوحات Dashboard المجمَّعة الفعلية في
+        دفعة لاحقة (Slice 2).'
+      x-traceability:
+        requirements: []
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: event_type
+        in: query
+        schema:
+          type: string
+      - name: context_type
+        in: query
+        schema:
+          type: string
+      - name: context_ref_id
+        in: query
+        schema:
+          type: string
+          format: uuid
+      - name: actor_ref_id
+        in: query
+        schema:
+          type: string
+          format: uuid
+      - name: date_from
+        in: query
+        schema:
+          type: string
+          format: date-time
+      - name: date_to
+        in: query
+        schema:
+          type: string
+          format: date-time
+      - name: page
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          default: 1
+      - name: page_size
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 20
+      responses:
+        '200':
+          description: الأحداث التحليلية المطابقة للفلاتر
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnalyticsEventListResponse'
+        '400':
+          description: event_type غير معروف
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: لا جلسة صالحة
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: يتطلب صلاحية مدير النظام
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /api/v1/subscriptions/plans:
     post:
       operationId: createSubscriptionPlan
