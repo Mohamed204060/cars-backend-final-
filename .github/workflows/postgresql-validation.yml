@@ -132,9 +132,7 @@ jobs:
             echo "missing_files=$missing_files"
           } | tee "$EVIDENCE_DIR/package-verification.txt"
 
-          # تشخيص مؤقَّت (Batch 2 Unit 1 Preflight Root-Cause): طباعة القيم
-          # بصيغة shell-escaped (%q) تكشف أي محارف غير مرئية (CR خفي، مسافات
-          # زائدة، إلخ) لا تظهر في echo عادي — يُزال بعد حسم السبب الجذري.
+          # تشخيص مؤقَّت: طباعة القيم بصيغة shell-escaped تكشف أي محارف غير مرئية.
           printf 'migration_count_raw=<%q>\n' "$migration_count"
           printf 'missing_files_raw=<%q>\n' "$missing_files"
 
@@ -143,14 +141,14 @@ jobs:
             exit 1
           fi
 
-          if [ "$migration_count" -ne 32 ]; then
-            echo "FAIL: migration_count=$migration_count (توقُّع 32) — إن ظهرت قيمة غير 32 هنا رغم كون العدّ الفعلي 32 على القرص، فالسبب الأرجح نسخة قديمة من هذا الملف نفسه (.github/workflows/postgresql-validation.yml) لا تزال حيّة على GitHub بقيمة توقُّع مختلفة (مثل 31) لم تُستبدَل فعليًا بهذا الإصدار." >&2
+          if [ "$migration_count" -ne 33 ]; then
+            echo "FAIL: migration_count=$migration_count (توقُّع 33) — العدد المعتمد حاليًا هو 33 Migration بعد إضافة 033_ana_events.sql." >&2
             exit 1
           fi
 
           echo "Execution package structure is valid."
 
-      - name: Create database and apply 32 migrations
+      - name: Create database and apply 33 migrations
         working-directory: postgres_execution_package
         run: |
           set -euo pipefail
@@ -281,69 +279,6 @@ jobs:
           python -m pytest tests/test_postgres_search_api_integration.py -vv \
             --junitxml="../$EVIDENCE_DIR/search-integration-tests.xml" \
             2>&1 | tee "../$EVIDENCE_DIR/search-integration-tests.log"
-
-      - name: Diagnose /stores/mine route resolution (Store REST API root-cause)
-        run: |
-          set -euo pipefail
-          {
-            echo "=== Git checkout ==="
-            git rev-parse HEAD
-
-            echo "=== all store_api.py files ==="
-            find . -type f -name 'store_api.py' -print -exec sha256sum {} \;
-
-            echo "=== expected file ==="
-            sha256sum postgres_execution_package/services/store/src/store_api.py
-
-            cd postgres_execution_package
-
-            python - <<'PY'
-          import importlib.util
-          import hashlib
-          import pathlib
-          import sys
-
-          # حمّل conftest نفسه لتطبيق sys.path الحقيقي الذي يستخدمه pytest
-          p = pathlib.Path("tests/conftest.py").resolve()
-          spec = importlib.util.spec_from_file_location("ci_conftest", p)
-          mod = importlib.util.module_from_spec(spec)
-          spec.loader.exec_module(mod)
-
-          import store_api
-
-          print("store_api.__file__ =", store_api.__file__)
-          path = pathlib.Path(store_api.__file__).resolve()
-          print("store_api.sha256 =", hashlib.sha256(path.read_bytes()).hexdigest())
-
-          print("=== sys.path ===")
-          for x in sys.path:
-              print(x)
-
-          print("=== store_router.routes ===")
-          for i, route in enumerate(store_api.router.routes):
-              print(
-                  i,
-                  sorted(getattr(route, "methods", []) or []),
-                  getattr(route, "path", None),
-                  getattr(getattr(route, "endpoint", None), "__name__", None),
-              )
-
-          from fastapi import FastAPI
-          app = FastAPI()
-          app.include_router(store_api.router)
-
-          print("=== app.routes after include_router ===")
-          for i, route in enumerate(app.routes):
-              path_value = getattr(route, "path", "")
-              if path_value.startswith("/api/v1/store"):
-                  print(
-                      i,
-                      sorted(getattr(route, "methods", []) or []),
-                      path_value,
-                      getattr(getattr(route, "endpoint", None), "__name__", None),
-                  )
-          PY
-          } 2>&1 | tee "$EVIDENCE_DIR/store-api-route-diagnostic.log"
 
       - name: Run Store REST API unit tests
         working-directory: postgres_execution_package
@@ -489,7 +424,6 @@ jobs:
             --junitxml="../$EVIDENCE_DIR/sub-cnt-sup-integration-tests.xml" \
             2>&1 | tee "../$EVIDENCE_DIR/sub-cnt-sup-integration-tests.log"
 
-
       - name: Run full regression (361 tests)
         run: |
           set -euo pipefail
@@ -513,7 +447,6 @@ jobs:
             echo "- Timestamp (UTC): $(date -u +%Y-%m-%dT%H:%M:%SZ)"
             echo "- Job status: ${{ job.status }}"
           } | tee "$EVIDENCE_DIR/SUMMARY.md" >> "$GITHUB_STEP_SUMMARY"
-
 
       - name: Capture PostgreSQL diagnostics on failure
         if: failure()
