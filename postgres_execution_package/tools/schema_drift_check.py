@@ -864,7 +864,23 @@ EXPECTED_TABLES = {('sys', 'idempotency_keys'): {'columns': {'id': {'type': 'uui
                         'partial_indexes': [],
                         'primary_key_constraints': {'attachments_pkey': 'PRIMARY KEY (id)'},
                         # asset_ref_id FK داخلي حقيقي (نفس نطاق media) — يختلف عن كل owner_ref_id الأخرى في المشروع (Polymorphic بلا FK عمدًا، §5)
-                        'foreign_key_constraints': {'attachments_asset_ref_id_fkey': 'FOREIGN KEY (asset_ref_id) REFERENCES media.assets(id) ON DELETE RESTRICT'}}}
+                        'foreign_key_constraints': {'attachments_asset_ref_id_fkey': 'FOREIGN KEY (asset_ref_id) REFERENCES media.assets(id) ON DELETE RESTRICT'}},
+                    ('ana', 'events'): {
+                        'columns': {'id': {'type': 'uuid', 'nullable': False, 'has_default': True},
+                                    'event_type': {'type': 'character varying', 'nullable': False, 'has_default': False},
+                                    'occurred_at_utc': {'type': 'timestamp with time zone', 'nullable': False, 'has_default': True},
+                                    'actor_ref_id': {'type': 'uuid', 'nullable': True, 'has_default': False},
+                                    'session_ref_id': {'type': 'uuid', 'nullable': True, 'has_default': False},
+                                    'context_type': {'type': 'character varying', 'nullable': True, 'has_default': False},
+                                    'context_ref_id': {'type': 'uuid', 'nullable': True, 'has_default': False},
+                                    'correlation_id': {'type': 'uuid', 'nullable': True, 'has_default': False},
+                                    'metadata': {'type': 'jsonb', 'nullable': True, 'has_default': False}},
+                        'unique_constraints': [],
+                        'check_constraints': ['chk_ana_events_type'],
+                        'indexes': ['idx_ana_events_actor', 'idx_ana_events_context', 'idx_ana_events_correlation', 'idx_ana_events_type_time'],
+                        'partial_indexes': [],
+                        'primary_key_constraints': {'events_pkey': 'PRIMARY KEY (id)'},
+                        'foreign_key_constraints': {}}}
 
 # استثناءات معتمَدة صراحة (لا تُحتسَب كانحراف رغم أنها قد تبدو كذلك ظاهريًا)
 APPROVED_EXCEPTIONS_NOTE = {
