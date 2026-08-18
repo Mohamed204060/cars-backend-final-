@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: منصة قطع غيار السيارات - Auto Parts Marketplace API
-  version: 1.21.1
+  version: 1.22.0
   description: 'مواصفة API تنفيذية، تغطي 15 عملية (Operations) عبر 14 مسارًا (Paths): الواجهات التمثيلية
     الخمس الأصلية الموثّقة بالتفصيل في التصميم التفصيلي (الحزمة 2)، بالإضافة إلى 5 عمليات خدمة Auth (اعتماد
     Contract Extension & Implementation Plan): تسجيل خروج، عرض/إضافة/إزالة وسائل الهوية، وعرض مزوّدي الهوية
@@ -1921,7 +1921,128 @@ components:
             $ref: '#/components/schemas/AnalyticsEventResponse'
         pagination:
           $ref: '#/components/schemas/PaginationMeta'
+    ExecutiveDashboardResponse:
+      type: object
+      description: 'Batch 3A Slice 2: Marketplace Matching & Conversion — لا بيانات مالية (Revenue/Profit/GMV/Commission)؛
+        CarsMaint ليس طرفًا ماليًا في V1. الصيغ الكاملة موثَّقة في rpt_service.py (Reporting Data Dictionary، SSOT وحيد).'
+      properties:
+        generated_at_utc:
+          type: string
+          format: date-time
+        date_from:
+          type: string
+          format: date-time
+          nullable: true
+        date_to:
+          type: string
+          format: date-time
+          nullable: true
+        users_total:
+          type: integer
+        users_new:
+          type: integer
+        users_by_status:
+          type: object
+          additionalProperties:
+            type: integer
+        sellers_total:
+          type: integer
+        stores_total:
+          type: integer
+        stores_by_status:
+          type: object
+          additionalProperties:
+            type: integer
+        inventory_items_total:
+          type: integer
+        inventory_items_by_status:
+          type: object
+          additionalProperties:
+            type: integer
+        catalog_parts_total:
+          type: integer
+        catalog_parts_by_status:
+          type: object
+          additionalProperties:
+            type: integer
+        purchase_requests_total:
+          type: integer
+        purchase_requests_by_status:
+          type: object
+          additionalProperties:
+            type: integer
+        purchase_requests_without_offers:
+          type: integer
+        offers_total:
+          type: integer
+        offers_by_status:
+          type: object
+          additionalProperties:
+            type: integer
+        request_to_offer_rate:
+          type: number
+          format: float
+        request_to_accepted_offer_rate:
+          type: number
+          format: float
+        avg_offers_per_request:
+          type: number
+          format: float
+        subscriptions_active_total:
+          type: integer
+        subscriptions_by_plan:
+          type: object
+          additionalProperties:
+            type: integer
 paths:
+  /api/v1/reports/executive-dashboard:
+    get:
+      operationId: getExecutiveDashboard
+      summary: لوحة المؤشرات التنفيذية (مدير النظام حصريًا، Batch 3A Slice 2)
+      description: 'Snapshot لحظي لكل المؤشرات (users_new وحدها تتقيَّد بـdate_from/date_to). Read-Only بالكامل —
+        لا Endpoint للكتابة. لا Revenue/Profit/GMV — Marketplace Matching & Conversion فقط (§7/§8 من الكتالوج).'
+      x-traceability:
+        requirements: []
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: date_from
+        in: query
+        schema:
+          type: string
+          format: date-time
+      - name: date_to
+        in: query
+        schema:
+          type: string
+          format: date-time
+      responses:
+        '200':
+          description: لوحة المؤشرات التنفيذية
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExecutiveDashboardResponse'
+        '400':
+          description: date_from بعد date_to
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: لا جلسة صالحة
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: يتطلب صلاحية مدير النظام
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /api/v1/audit/events:
     get:
       operationId: listAuditEvents
