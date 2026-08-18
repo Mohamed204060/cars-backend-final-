@@ -181,18 +181,27 @@ class TestListEventsFilters:
         assert resp.json()["detail"]["error_code"] == "INVALID_REF_ID"
 
     def test_filter_by_actor_ref_id(self, app_and_client):
-        """Corrective Pass: actor_ref_id أصبح فلترًا فعليًا (لا Query Param متجاهَل)."""
+        """Corrective Pass: actor_ref_id أصبح فلترًا فعليًا (لا Query Param متجاهَل).
+        ملاحظة بيانات اختبار: InMemoryAuthRepository.create_user() يُعيد مُعرِّفات
+        بصيغة 'user-N' (وليس UUID) — قصور في مُولِّد المعرِّفات الوهمي فقط، لا في
+        العقد الفعلي (iam.users.id عمود UUID حقيقي في PostgreSQL، ونفس النمط
+        مُثبَت في test_postgres_ana_api_integration.py). لذلك هذا الاختبار يُدرِج
+        الحدث مباشرة عبر Repository بـUUID صريح صالح (بنفس نمط _seed أعلاه)
+        بدل الاعتماد على معرّف الجلسة الوهمي — لا نخفف UUID Validation، ولا
+        نغيّر مُولِّد InMemoryAuthRepository (يخص وحدات اختبار أخرى مغلقة)."""
         app, client = app_and_client
-        user_id = _login_as(app, client, "buyer@example.com")
-        client.post("/api/v1/analytics/events", json={"event_type": "search_performed"})
-        client.post("/api/v1/auth/logout")
+        actor_id = str(uuid.uuid4())
+        record_analytics_event_via_repository(app.state.ana_repository, event_type="search_performed",
+                                                actor_ref_id=actor_id)
+        record_analytics_event_via_repository(app.state.ana_repository, event_type="offer_submitted",
+                                                actor_ref_id=str(uuid.uuid4()))
 
         _login_as(app, client, "admin@example.com", role="admin")
-        resp = client.get("/api/v1/analytics/events", params={"actor_ref_id": user_id})
+        resp = client.get("/api/v1/analytics/events", params={"actor_ref_id": actor_id})
         assert resp.status_code == 200
         body = resp.json()
         assert body["pagination"]["total_items"] == 1
-        assert body["items"][0]["actor_ref_id"] == user_id
+        assert body["items"][0]["actor_ref_id"] == actor_id
 
 
 class TestPaginationBounds:
