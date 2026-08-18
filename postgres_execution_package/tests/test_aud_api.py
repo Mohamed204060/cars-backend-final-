@@ -15,7 +15,7 @@ from auth_service import IdentityProvider, UserIdentity
 from session_repository import InMemorySessionRepository
 from aud_api import router as aud_router
 from aud_repository import AuditEvent, InMemoryAudRepository
-from aud_service import record_audit_event_via_repository
+from aud_service import InvalidRefIdError, record_audit_event_via_repository
 
 
 @pytest.fixture
@@ -95,6 +95,35 @@ class TestListAuditEventsAuthorization:
         assert client.post("/api/v1/audit/events", json={}).status_code == 405
         assert client.put("/api/v1/audit/events/some-id", json={}).status_code == 404
         assert client.delete("/api/v1/audit/events/some-id").status_code == 404
+
+
+class TestRecordAuditEventCorrelationId:
+    """Root-Cause (Run 32151132791): correlation_id UUID NOT NULL في aud.events
+    (004_aud.sql، مغلَق) — لا builder حالٍ (auth_service.build_security_audit_event/
+    store_service.build_administrative_audit_event) يُرجعه؛ الإنفاذ الآن هنا،
+    في aud_service.py، يحمي كل مسارات الكتابة الحالية والمستقبلية معًا."""
+
+    def test_correlation_id_auto_generated_when_omitted(self, app_and_client):
+        app, client = app_and_client
+        repo = app.state.aud_repository
+        event = record_audit_event_via_repository(repo, log_type="general", event_name="misc_event")
+        assert event.correlation_id is not None
+        uuid.UUID(event.correlation_id)  # يرمي استثناء لو لم يكن UUID صالحًا
+
+    def test_explicit_correlation_id_respected(self, app_and_client):
+        app, client = app_and_client
+        repo = app.state.aud_repository
+        explicit = str(uuid.uuid4())
+        event = record_audit_event_via_repository(repo, log_type="general", event_name="misc_event",
+                                                    correlation_id=explicit)
+        assert event.correlation_id == explicit
+
+    def test_invalid_explicit_correlation_id_rejected(self, app_and_client):
+        app, client = app_and_client
+        repo = app.state.aud_repository
+        with pytest.raises(InvalidRefIdError):
+            record_audit_event_via_repository(repo, log_type="general", event_name="misc_event",
+                                                correlation_id="not-a-uuid")
 
 
 class TestListAuditEventsFiltersAndPagination:

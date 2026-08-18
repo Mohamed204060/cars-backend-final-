@@ -112,3 +112,25 @@ class TestAuditEventsOnLivePostgres:
         _register_and_login(client, conn, f"admin{uuid.uuid4().hex[:6]}@example.com", role="admin")
         assert client.get("/api/v1/audit/events", params={"page": 0}).status_code == 422
         assert client.get("/api/v1/audit/events", params={"page_size": 1000}).status_code == 422
+
+
+class TestAuditEventCorrelationIdNotNullOnLivePostgres:
+    """Root-Cause (Run 32151132791): psycopg2.errors.NotNullViolation على correlation_id
+    (aud.events، 004_aud.sql، مغلَق — NOT NULL بلا قيمة افتراضية في القاعدة).
+    لا builder حالٍ (auth_service/store_service) يُرجعه؛ aud_service.py يولِّد UUID
+    عند غيابه الآن (نفس نمط get_correlation_id في auth_api.py). هذا الاختبار يثبت
+    ذلك مباشرة على PostgreSQL حي — الإثبات الحاسم الوحيد لهذه الفئة من الأخطاء."""
+
+    def test_insert_without_explicit_correlation_id_succeeds_on_live_postgres(self, app_and_client):
+        app, client, conn = app_and_client
+        actor_id = _register_and_login(client, conn, f"admin{uuid.uuid4().hex[:6]}@example.com", role="admin")
+        # لا correlation_id مُمرَّر إطلاقًا — كان هذا يُسقِط NotNullViolation قبل الإصلاح
+        event = record_audit_event_via_repository(
+            app.state.aud_repository, log_type="general", event_name="misc_event", actor_ref_id=actor_id,
+        )
+        assert event.correlation_id is not None
+        uuid.UUID(event.correlation_id)  # يرمي استثناء لو لم يكن UUID صالحًا
+
+        resp = client.get("/api/v1/audit/events", params={"actor_ref_id": actor_id, "event_name": "misc_event"})
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["items"][0]["correlation_id"] == event.correlation_id
