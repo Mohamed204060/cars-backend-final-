@@ -101,7 +101,7 @@ class TestAnalyticsEventsOnLivePostgres:
         app, client, conn = app_and_client
         resp = client.post("/api/v1/analytics/events", json={"event_type": "offer_submitted", "context_ref_id": "not-a-uuid"})
         assert resp.status_code == 400
-        assert resp.json()["error_code"] == "INVALID_REF_ID"
+        assert resp.json()["detail"]["error_code"] == "INVALID_REF_ID"
 
     def test_filter_by_event_type_on_live_postgres(self, app_and_client):
         app, client, conn = app_and_client
@@ -120,7 +120,7 @@ class TestAnalyticsEventsOnLivePostgres:
         app, client, conn = app_and_client
         resp = client.post("/api/v1/analytics/events", json={"event_type": "definitely_not_in_the_catalog"})
         assert resp.status_code == 400
-        assert resp.json()["error_code"] == "INVALID_EVENT_TYPE"
+        assert resp.json()["detail"]["error_code"] == "INVALID_EVENT_TYPE"
 
     def test_forbidden_for_non_admin_read_on_live_postgres(self, app_and_client):
         app, client, conn = app_and_client

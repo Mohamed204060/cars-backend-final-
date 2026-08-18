@@ -105,7 +105,7 @@ class TestAuditEventsOnLivePostgres:
         _register_and_login(client, conn, f"admin{uuid.uuid4().hex[:6]}@example.com", role="admin")
         resp = client.get("/api/v1/audit/events", params={"actor_ref_id": "not-a-uuid"})
         assert resp.status_code == 400
-        assert resp.json()["error_code"] == "INVALID_REF_ID"
+        assert resp.json()["detail"]["error_code"] == "INVALID_REF_ID"
 
     def test_pagination_bounds_rejected_on_live_postgres(self, app_and_client):
         app, client, conn = app_and_client

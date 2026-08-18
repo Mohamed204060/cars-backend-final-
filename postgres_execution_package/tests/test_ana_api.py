@@ -72,14 +72,14 @@ class TestRecordEvent:
         app, client = app_and_client
         resp = client.post("/api/v1/analytics/events", json={"event_type": "totally_made_up_event"})
         assert resp.status_code == 400
-        assert resp.json()["error_code"] == "INVALID_EVENT_TYPE"
+        assert resp.json()["detail"]["error_code"] == "INVALID_EVENT_TYPE"
 
     def test_metadata_too_many_keys_returns_400(self, app_and_client):
         app, client = app_and_client
         big_metadata = {f"key_{i}": i for i in range(25)}
         resp = client.post("/api/v1/analytics/events", json={"event_type": "search_performed", "metadata": big_metadata})
         assert resp.status_code == 400
-        assert resp.json()["error_code"] == "METADATA_TOO_LARGE"
+        assert resp.json()["detail"]["error_code"] == "METADATA_TOO_LARGE"
 
     def test_metadata_single_huge_value_returns_400(self, app_and_client):
         """Corrective Pass: قيمة واحدة ضخمة (حجم فعلي، لا عدد مفاتيح) يجب أن تُرفَض أيضًا."""
@@ -87,7 +87,7 @@ class TestRecordEvent:
         huge_metadata = {"note": "x" * 20000}  # مفتاح واحد فقط، لكن حجمه serialized يتجاوز 8KB
         resp = client.post("/api/v1/analytics/events", json={"event_type": "search_performed", "metadata": huge_metadata})
         assert resp.status_code == 400
-        assert resp.json()["error_code"] == "METADATA_TOO_LARGE"
+        assert resp.json()["detail"]["error_code"] == "METADATA_TOO_LARGE"
 
     def test_metadata_within_bounds_accepted(self, app_and_client):
         app, client = app_and_client
@@ -102,7 +102,7 @@ class TestRecordEvent:
             "event_type": "inventory_item_viewed", "context_type": "inventory_item", "context_ref_id": "item-1",
         })
         assert resp.status_code == 400
-        assert resp.json()["error_code"] == "INVALID_REF_ID"
+        assert resp.json()["detail"]["error_code"] == "INVALID_REF_ID"
 
     def test_all_catalog_v32_event_types_accepted(self, app_and_client):
         app, client = app_and_client
@@ -178,7 +178,7 @@ class TestListEventsFilters:
         _login_as(app, client, "admin@example.com", role="admin")
         resp = client.get("/api/v1/analytics/events", params={"context_ref_id": "not-a-uuid"})
         assert resp.status_code == 400
-        assert resp.json()["error_code"] == "INVALID_REF_ID"
+        assert resp.json()["detail"]["error_code"] == "INVALID_REF_ID"
 
     def test_filter_by_actor_ref_id(self, app_and_client):
         """Corrective Pass: actor_ref_id أصبح فلترًا فعليًا (لا Query Param متجاهَل)."""

@@ -84,12 +84,17 @@ class TestListAuditEventsAuthorization:
         assert resp.status_code == 200
 
     def test_no_write_endpoint_exists(self, app_and_client):
-        """قرار تصميمي مقصود: لا POST/PUT/DELETE على /audit/events إطلاقًا."""
+        """قرار تصميمي مقصود: لا مسار كتابة على /audit/events إطلاقًا (GET-only externally).
+        POST /audit/events → 405 (المسار نفسه مُسجَّل بـGET فقط، فتُرفَض بقية الطرق عليه صراحة).
+        PUT/DELETE /audit/events/{id} → 404 (هذا المسار الفرعي غير مُسجَّل أصلًا في aud_api.py —
+        لا Route بهذا الشكل، فـFastAPI يُرجِع 404 Not Found بحسب دلالات HTTP Routing القياسية،
+        وليس 405 الذي يقتضي وجود المسار بطريقة مختلفة. لا نضيف Route فرعيًا هنا فقط ليصبح 405،
+        فذلك يوسّع سطح الـAPI بلا داعٍ ويضاد قرار GET-only externally.)"""
         app, client = app_and_client
         _login_as(app, client, "admin2@example.com", role="admin")
         assert client.post("/api/v1/audit/events", json={}).status_code == 405
-        assert client.put("/api/v1/audit/events/some-id", json={}).status_code == 405
-        assert client.delete("/api/v1/audit/events/some-id").status_code == 405
+        assert client.put("/api/v1/audit/events/some-id", json={}).status_code == 404
+        assert client.delete("/api/v1/audit/events/some-id").status_code == 404
 
 
 class TestListAuditEventsFiltersAndPagination:
@@ -140,7 +145,7 @@ class TestListAuditEventsFiltersAndPagination:
         _login_as(app, client, "admin@example.com", role="admin")
         resp = client.get("/api/v1/audit/events", params={"actor_ref_id": "u1"})
         assert resp.status_code == 400
-        assert resp.json()["error_code"] == "INVALID_REF_ID"
+        assert resp.json()["detail"]["error_code"] == "INVALID_REF_ID"
 
     def test_events_include_administrative_reason_field(self, app_and_client):
         app, client = app_and_client
