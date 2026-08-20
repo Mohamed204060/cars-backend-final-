@@ -463,3 +463,110 @@ class TestTrendingParts:
         resp = client.get("/api/v1/reports/trending-parts")
         assert resp.status_code == 200
         assert resp.json()["top_growing_parts"] == []
+
+
+class TestUserAnalytics:
+
+    def test_requires_authentication(self, app_and_client):
+        app, client = app_and_client
+        assert client.get("/api/v1/reports/user-analytics").status_code == 401
+
+    def test_forbidden_for_non_admin(self, app_and_client):
+        app, client = app_and_client
+        _login_as(app, client, "buyer@example.com", role="individual_buyer")
+        assert client.get("/api/v1/reports/user-analytics").status_code == 403
+
+    def test_empty_dataset_no_errors(self, app_and_client):
+        app, client = app_and_client
+        _login_as(app, client, "admin@example.com", role="admin")
+        resp = client.get("/api/v1/reports/user-analytics")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["users_by_role"] == {}
+        assert body["verified_sellers_count"] == 0
+        assert body["registrations_by_day"] == []
+
+    def test_role_account_type_and_verified_seller_breakdown(self, app_and_client):
+        app, client = app_and_client
+        now = datetime.utcnow()
+        repo = app.state.rpt_repository
+        repo.users = [
+            {"primary_role": "individual_buyer", "account_type": "individual", "is_verified_seller": False, "created_at": now},
+            {"primary_role": "individual_seller", "account_type": "individual", "is_verified_seller": True, "created_at": now},
+            {"primary_role": "business_seller", "account_type": "business", "is_verified_seller": True, "created_at": now},
+        ]
+        _login_as(app, client, "admin@example.com", role="admin")
+        resp = client.get("/api/v1/reports/user-analytics")
+        body = resp.json()
+        assert body["users_by_role"] == {"individual_buyer": 1, "individual_seller": 1, "business_seller": 1}
+        assert body["users_by_account_type"] == {"individual": 2, "business": 1}
+        assert body["verified_sellers_count"] == 2
+
+    def test_registrations_by_day_requires_date_range(self, app_and_client):
+        """Date Semantics: بلا مدى زمني، registrations_by_day فارغة — نفس مبدأ
+        users_new في Executive Dashboard (لا معنى لـ'اتجاه يومي' بلا نافذة)."""
+        app, client = app_and_client
+        now = datetime.utcnow()
+        repo = app.state.rpt_repository
+        repo.users = [
+            {"primary_role": "individual_buyer", "account_type": "individual", "is_verified_seller": False, "created_at": now},
+            {"primary_role": "individual_buyer", "account_type": "individual", "is_verified_seller": False, "created_at": now},
+        ]
+        _login_as(app, client, "admin@example.com", role="admin")
+
+        no_range = client.get("/api/v1/reports/user-analytics")
+        assert no_range.json()["registrations_by_day"] == []
+
+        with_range = client.get("/api/v1/reports/user-analytics", params={
+            "date_from": (now - timedelta(days=7)).isoformat(), "date_to": now.isoformat(),
+        })
+        days = with_range.json()["registrations_by_day"]
+        assert len(days) == 1
+        assert days[0]["count"] == 2
+
+    def test_invalid_date_range_returns_400(self, app_and_client):
+        app, client = app_and_client
+        now = datetime.utcnow()
+        _login_as(app, client, "admin@example.com", role="admin")
+        resp = client.get("/api/v1/reports/user-analytics", params={
+            "date_from": now.isoformat(), "date_to": (now - timedelta(days=1)).isoformat(),
+        })
+        assert resp.status_code == 400
+        assert resp.json()["detail"]["error_code"] == "INVALID_DATE_RANGE"
+
+    def test_date_only_range_is_inclusive_of_full_end_day(self, app_and_client):
+        """Root-Cause Fix (مراجعة ما قبل الرفع): date_to بصيغة تاريخ بلا وقت
+        (مثل ما يُرسِله <input type="date">، الحالة الفعلية 'YYYY-MM-DD') يجب أن
+        يشمل اليوم بأكمله — لا يُستبعَد سجل في منتصف/نهاية ذلك اليوم. سجل اليوم
+        التالي مباشرة يجب ألا يُحتسَب."""
+        app, client = app_and_client
+        repo = app.state.rpt_repository
+        repo.users = [
+            {"primary_role": "individual_buyer", "account_type": "individual", "is_verified_seller": False,
+             "created_at": datetime(2026, 8, 1, 0, 0, 0)},  # بداية النطاق تمامًا
+            {"primary_role": "individual_buyer", "account_type": "individual", "is_verified_seller": False,
+             "created_at": datetime(2026, 8, 20, 15, 30, 0)},  # منتصف يوم النهاية — كان يُستبعَد قبل الإصلاح
+            {"primary_role": "individual_buyer", "account_type": "individual", "is_verified_seller": False,
+             "created_at": datetime(2026, 8, 20, 23, 59, 0)},  # نهاية يوم النهاية تمامًا
+            {"primary_role": "individual_buyer", "account_type": "individual", "is_verified_seller": False,
+             "created_at": datetime(2026, 8, 21, 0, 0, 1)},  # اليوم التالي — يجب ألا يُحتسَب
+        ]
+        _login_as(app, client, "admin@example.com", role="admin")
+
+        # نفس الصيغة الفعلية التي يُرسِلها <input type="date"> — تاريخ بلا وقت إطلاقًا
+        resp = client.get("/api/v1/reports/user-analytics", params={"date_from": "2026-08-01", "date_to": "2026-08-20"})
+        assert resp.status_code == 200, resp.text
+        total = sum(d["count"] for d in resp.json()["registrations_by_day"])
+        assert total == 3, f"expected 3 (excludes only the next-day record), got {total}"
+
+        day20 = next((d for d in resp.json()["registrations_by_day"] if d["date"] == "2026-08-20"), None)
+        assert day20 is not None and day20["count"] == 2, "both end-of-range-day records must be counted"
+
+    def test_no_country_city_language_fields_present(self, app_and_client):
+        """قرار حاكم صريح: لا اختراع بيانات جغرافية/لغوية غير متوفرة فعليًا
+        في iam.users — لا حقل من هذا النوع في الاستجابة إطلاقًا."""
+        app, client = app_and_client
+        _login_as(app, client, "admin@example.com", role="admin")
+        body = client.get("/api/v1/reports/user-analytics").json()
+        forbidden_keys = {"country", "city", "language", "country_ref_id", "city_ref_id"}
+        assert forbidden_keys.isdisjoint(set(k.lower() for k in body.keys()))

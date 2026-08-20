@@ -9,6 +9,7 @@ test_postgres_rpt_api_integration.py — اختبارات تكامل حقيقي�
 
 import os
 import uuid
+from datetime import datetime, timedelta, timezone
 
 import pytest
 import psycopg2
@@ -517,3 +518,55 @@ class TestTrendingPartsOnLivePostgres:
         resp = client.get("/api/v1/reports/trending-parts", params={"window_days": 0})
         assert resp.status_code == 400
         assert resp.json()["detail"]["error_code"] == "INVALID_WINDOW"
+
+
+class TestUserAnalyticsOnLivePostgres:
+
+    def test_query_executes_and_role_breakdown_correct(self, app_and_client):
+        app, client, conn = app_and_client
+        _register_and_login(client, conn, f"buyer{uuid.uuid4().hex[:6]}@example.com", role="individual_buyer")
+        _register_and_login(client, conn, f"seller{uuid.uuid4().hex[:6]}@example.com", role="individual_seller")
+        admin_id = _register_and_login(client, conn, f"admin{uuid.uuid4().hex[:6]}@example.com", role="admin")
+
+        resp = client.get("/api/v1/reports/user-analytics")
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["users_by_role"].get("individual_buyer", 0) >= 1
+        assert body["users_by_role"].get("individual_seller", 0) >= 1
+        assert body["users_by_role"].get("admin", 0) >= 1
+
+    def test_forbidden_for_non_admin_on_live_postgres(self, app_and_client):
+        app, client, conn = app_and_client
+        _register_and_login(client, conn, f"buyer{uuid.uuid4().hex[:6]}@example.com", role="individual_buyer")
+        assert client.get("/api/v1/reports/user-analytics").status_code == 403
+
+    def test_registrations_by_day_reflects_real_insert_on_live_postgres(self, app_and_client):
+        app, client, conn = app_and_client
+        now = datetime.now(timezone.utc)
+        _register_and_login(client, conn, f"admin-before{uuid.uuid4().hex[:6]}@example.com", role="admin")
+        before = client.get("/api/v1/reports/user-analytics", params={
+            "date_from": (now - timedelta(hours=1)).isoformat(), "date_to": (now + timedelta(hours=1)).isoformat(),
+        }).json()
+        total_before = sum(d["count"] for d in before["registrations_by_day"])
+        client.post("/api/v1/auth/logout")
+
+        _register_and_login(client, conn, f"newuser{uuid.uuid4().hex[:6]}@example.com")
+        client.post("/api/v1/auth/logout")
+
+        _register_and_login(client, conn, f"admin-after{uuid.uuid4().hex[:6]}@example.com", role="admin")
+        now2 = datetime.now(timezone.utc)
+        after = client.get("/api/v1/reports/user-analytics", params={
+            "date_from": (now - timedelta(hours=1)).isoformat(), "date_to": (now2 + timedelta(hours=1)).isoformat(),
+        }).json()
+        total_after = sum(d["count"] for d in after["registrations_by_day"])
+        # 3 مستخدمين جدد على الأقل أُنشِئوا في هذا الاختبار (admin-before، newuser، admin-after)
+        assert total_after - total_before >= 2
+
+    def test_invalid_date_range_rejected_on_live_postgres(self, app_and_client):
+        app, client, conn = app_and_client
+        _register_and_login(client, conn, f"admin{uuid.uuid4().hex[:6]}@example.com", role="admin")
+        resp = client.get("/api/v1/reports/user-analytics", params={
+            "date_from": "2026-06-01T00:00:00", "date_to": "2026-01-01T00:00:00",
+        })
+        assert resp.status_code == 400
+        assert resp.json()["detail"]["error_code"] == "INVALID_DATE_RANGE"
