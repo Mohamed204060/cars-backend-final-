@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: منصة قطع غيار السيارات - Auto Parts Marketplace API
-  version: 1.24.1
+  version: 1.25.0
   description: 'مواصفة API تنفيذية، تغطي 15 عملية (Operations) عبر 14 مسارًا (Paths): الواجهات التمثيلية
     الخمس الأصلية الموثّقة بالتفصيل في التصميم التفصيلي (الحزمة 2)، بالإضافة إلى 5 عمليات خدمة Auth (اعتماد
     Contract Extension & Implementation Plan): تسجيل خروج، عرض/إضافة/إزالة وسائل الهوية، وعرض مزوّدي الهوية
@@ -2164,6 +2164,44 @@ components:
                 type: integer
               growth:
                 type: integer
+    UserAnalyticsResponse:
+      type: object
+      description: 'Batch 3A Slice 2 (Detailed Analytics — أول جزء). لا Country/City/Language هنا: iam.users
+        لا يحمل هذه الأعمدة في أي Migration حالية — الاختراع ممنوع. registrations_by_day يتطلب date_from
+        و/أو date_to فعليًا (قائمة فارغة بلا مدى، بنفس مبدأ users_new في Executive Dashboard)؛ باقي الحقول
+        Snapshot لحظي.'
+      properties:
+        generated_at_utc:
+          type: string
+          format: date-time
+        date_from:
+          type: string
+          format: date-time
+          nullable: true
+        date_to:
+          type: string
+          format: date-time
+          nullable: true
+        registrations_by_day:
+          type: array
+          items:
+            type: object
+            properties:
+              date:
+                type: string
+                format: date
+              count:
+                type: integer
+        users_by_role:
+          type: object
+          additionalProperties:
+            type: integer
+        users_by_account_type:
+          type: object
+          additionalProperties:
+            type: integer
+        verified_sellers_count:
+          type: integer
 paths:
   /api/v1/reports/executive-dashboard:
     get:
@@ -2388,6 +2426,55 @@ paths:
                 $ref: '#/components/schemas/TrendingPartsResponse'
         '400':
           description: window_days خارج النطاق المسموح
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: لا جلسة صالحة
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: يتطلب صلاحية مدير النظام
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/reports/user-analytics:
+    get:
+      operationId: getUserAnalytics
+      summary: تحليلات المستخدمين التفصيلية (مدير النظام حصريًا، Batch 3A Slice 2)
+      description: 'أول جزء من Detailed Analytics. لا Country/City/Language — iam.users لا يحمل هذه
+        الأعمدة في أي Migration حالية. registrations_by_day يتطلب date_from و/أو date_to فعليًا؛ باقي
+        الحقول Snapshot لحظي.'
+      x-traceability:
+        requirements: []
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: date_from
+        in: query
+        schema:
+          type: string
+          format: date-time
+      - name: date_to
+        in: query
+        schema:
+          type: string
+          format: date-time
+      responses:
+        '200':
+          description: تحليلات المستخدمين
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserAnalyticsResponse'
+        '400':
+          description: date_from بعد date_to
           content:
             application/json:
               schema:
