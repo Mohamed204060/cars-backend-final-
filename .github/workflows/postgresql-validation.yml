@@ -457,7 +457,7 @@ jobs:
             --junitxml="../$EVIDENCE_DIR/ana-api-integration-tests.xml" \
             2>&1 | tee "../$EVIDENCE_DIR/ana-api-integration-tests.log"
 
-      - name: Run RPT (Executive Dashboard) REST API unit tests (Batch 3A Slice 2)
+      - name: 'Run RPT (Reporting — Executive Dashboard/Search Analytics/Missing Parts) REST API unit tests (Batch 3A Slice 2)'
         working-directory: postgres_execution_package
         run: |
           set -euo pipefail
@@ -465,13 +465,21 @@ jobs:
             --junitxml="../$EVIDENCE_DIR/rpt-api-tests.xml" \
             2>&1 | tee "../$EVIDENCE_DIR/rpt-api-tests.log"
 
-      - name: Run RPT (Executive Dashboard) REST API integration tests on live PostgreSQL (Batch 3A Slice 2)
+      - name: 'Run RPT (Reporting — Executive Dashboard/Search Analytics/Missing Parts) REST API integration tests on live PostgreSQL (Batch 3A Slice 2)'
         working-directory: postgres_execution_package
         run: |
           set -euo pipefail
           python -m pytest tests/test_postgres_rpt_api_integration.py -vv \
             --junitxml="../$EVIDENCE_DIR/rpt-api-integration-tests.xml" \
             2>&1 | tee "../$EVIDENCE_DIR/rpt-api-integration-tests.log"
+
+      - name: Run Search Analytics instrumentation unit tests (Batch 3A Slice 2)
+        working-directory: postgres_execution_package
+        run: |
+          set -euo pipefail
+          python -m pytest tests/test_search_analytics_instrumentation.py -vv \
+            --junitxml="../$EVIDENCE_DIR/search-analytics-instrumentation-tests.xml" \
+            2>&1 | tee "../$EVIDENCE_DIR/search-analytics-instrumentation-tests.log"
 
       - name: Run TRM REST API unit tests
         working-directory: postgres_execution_package
