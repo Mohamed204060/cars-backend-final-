@@ -163,12 +163,38 @@ Null handling (Pre-Gate Corrective #5): window_days افتراضي 30 يُستخ
 مجمَّعة فقط — لا IP/Login/Messaging هنا؛ تلك في نطاق AUD منفصل تمامًا).
 لا Revenue/Profit/GMV/Commission/Refunds — V1 ليس طرفًا ماليًا (قرار حاكم صريح).
 ===========================================================================
+
+===========================================================================
+امتداد — User Analytics (أول جزء من Detailed Analytics)
+===========================================================================
+
+--- users_by_role / users_by_account_type / verified_sellers_count ---
+Formula: GROUP BY primary_role | GROUP BY account_type | COUNT WHERE is_verified_seller=true
+SSOT: iam.users مباشرة. Snapshot لحظي، بلا فلترة زمنية.
+Sensitivity: Internal.
+
+--- registrations_by_day ---
+Formula: GROUP BY date_trunc('day', created_at) ضمن [date_from, date_to]
+Null handling: يتطلب date_from و/أو date_to فعليًا؛ قائمة فارغة بلا مدى زمني
+               (بنفس مبدأ users_new في Executive Dashboard — لا معنى لـ"الاتجاه
+               اليومي" بلا نافذة زمنية محدَّدة).
+لا Country/City/Language هنا: iam.users لا يحمل هذه الأعمدة في أي Migration
+حالية (تحقُّق مصدري مباشر) — الاختراع ممنوع صراحة. البيانات الجغرافية
+متاحة فقط على مستوى المتجر (str.stores)، تُعرَض ضمن Seller/Store Analytics.
+===========================================================================
 """
 
 from datetime import datetime
 from typing import Optional
 
-from rpt_repository import ExecutiveDashboard, MarketplaceIntelligence, MissingPartsReport, SearchAnalytics, TrendingParts
+from rpt_repository import (
+    ExecutiveDashboard,
+    MarketplaceIntelligence,
+    MissingPartsReport,
+    SearchAnalytics,
+    TrendingParts,
+    UserAnalytics,
+)
 
 
 class InvalidDateRangeError(ValueError):
@@ -179,35 +205,61 @@ class InvalidWindowError(ValueError):
     pass
 
 
+def _normalize_date_range(
+    date_from: Optional[datetime], date_to: Optional[datetime],
+) -> "tuple[Optional[datetime], Optional[datetime]]":
+    """Root-Cause Fix (مراجعة ما قبل الرفع): date_from/date_to كلاهما "يوم تقويمي
+    Inclusive بالكامل" بالنسبة للمستخدم — نقطة توحيد واحدة تخدم كل Endpoints
+    هذا الملف (Executive Dashboard/Search Analytics/Missing Parts/Marketplace
+    Intelligence/User Analytics؛ Marketplace Intelligence يستدعي Repository
+    الأخرى داخليًا بنفس القيم المُطبَّعة هنا، فتُغطَّى تلقائيًا بلا تعديل مستقل).
+
+    السبب الجذري المؤكَّد فعليًا (لا افتراض): <input type="date"> في الواجهة
+    يُرسِل تاريخًا بلا وقت (مثل '2026-08-20')؛ FastAPI/Pydantic يُفسِّره
+    كمنتصف الليل 00:00:00 تلقائيًا. كل استعلامات Repository الفعلية
+    (rpt_repository.py، تحقَّقت من كل الأسطر) تستخدم `created_at <= date_to`/
+    `occurred_at_utc <= date_to` حرفيًا بلا أي تعديل لنهاية اليوم — يستبعد هذا
+    فعليًا كل سجلات يوم date_to تقريبًا (كل ما بعد 00:00:00.000000 بالضبط).
+
+    الحل: تطبيع date_from لبداية يومه (00:00:00.000000) وdate_to لنهاية يومه
+    (23:59:59.999999) هنا دائمًا، بصرف النظر عن أي مكوّن وقت وارد فعليًا في
+    القيمة الأصلية — دلالة موحَّدة ومتوقَّعة لكل مستهلكي هذا الـEndpoint (لا
+    تمييز بين "المستخدم قصد نصف الليل فعلًا" و"Default من Date Picker"،
+    لأن العقد المُعلَن هو Calendar Date أصلًا، لا Timestamp دقيق).
+    التحقق من date_from <= date_to يبقى على القيم الأصلية (مقارنة يوم بيوم
+    فعليًا، لأن كليهما بلا وقت غالبًا) قبل التطبيع، لرسالة خطأ واضحة."""
+    if date_from is not None and date_to is not None and date_from.date() > date_to.date():
+        raise InvalidDateRangeError("date_from يجب ألا يكون بعد date_to.")
+    normalized_from = date_from.replace(hour=0, minute=0, second=0, microsecond=0) if date_from is not None else None
+    normalized_to = date_to.replace(hour=23, minute=59, second=59, microsecond=999999) if date_to is not None else None
+    return normalized_from, normalized_to
+
+
 def get_executive_dashboard_via_repository(
     repository, date_from: Optional[datetime] = None, date_to: Optional[datetime] = None,
 ) -> ExecutiveDashboard:
-    if date_from is not None and date_to is not None and date_from > date_to:
-        raise InvalidDateRangeError("date_from يجب ألا يكون بعد date_to.")
+    date_from, date_to = _normalize_date_range(date_from, date_to)
     return repository.get_executive_dashboard(date_from, date_to)
 
 
 def get_search_analytics_via_repository(
     repository, date_from: Optional[datetime] = None, date_to: Optional[datetime] = None,
 ) -> SearchAnalytics:
-    if date_from is not None and date_to is not None and date_from > date_to:
-        raise InvalidDateRangeError("date_from يجب ألا يكون بعد date_to.")
+    date_from, date_to = _normalize_date_range(date_from, date_to)
     return repository.get_search_analytics(date_from, date_to)
 
 
 def get_missing_parts_report_via_repository(
     repository, date_from: Optional[datetime] = None, date_to: Optional[datetime] = None,
 ) -> MissingPartsReport:
-    if date_from is not None and date_to is not None and date_from > date_to:
-        raise InvalidDateRangeError("date_from يجب ألا يكون بعد date_to.")
+    date_from, date_to = _normalize_date_range(date_from, date_to)
     return repository.get_missing_parts_report(date_from, date_to)
 
 
 def get_marketplace_intelligence_via_repository(
     repository, date_from: Optional[datetime] = None, date_to: Optional[datetime] = None,
 ) -> MarketplaceIntelligence:
-    if date_from is not None and date_to is not None and date_from > date_to:
-        raise InvalidDateRangeError("date_from يجب ألا يكون بعد date_to.")
+    date_from, date_to = _normalize_date_range(date_from, date_to)
     return repository.get_marketplace_intelligence(date_from, date_to)
 
 
@@ -215,3 +267,10 @@ def get_trending_parts_via_repository(repository, window_days: int = 30) -> Tren
     if window_days < 1 or window_days > 365:
         raise InvalidWindowError("window_days يجب أن يكون بين 1 و365.")
     return repository.get_trending_parts(window_days)
+
+
+def get_user_analytics_via_repository(
+    repository, date_from: Optional[datetime] = None, date_to: Optional[datetime] = None,
+) -> UserAnalytics:
+    date_from, date_to = _normalize_date_range(date_from, date_to)
+    return repository.get_user_analytics(date_from, date_to)

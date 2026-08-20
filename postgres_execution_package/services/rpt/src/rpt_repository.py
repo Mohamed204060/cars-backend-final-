@@ -139,6 +139,22 @@ class TrendingParts:
     top_growing_parts: list  # [{"catalog_part_ref_id": str, "current_count": int, "previous_count": int, "growth": int}]
 
 
+@dataclass
+class UserAnalytics:
+    """أول جزء من Detailed Analytics (User/Seller/Store/Inventory/Catalog/PR/Offers)
+    بعد Executive Dashboard. لا Country/City/Language هنا عمدًا — iam.users لا
+    يحمل هذه الأعمدة إطلاقًا في أي Migration حالية (تحقَّقت صراحة)؛ اختراعها
+    غير مسموح. تلك البيانات متاحة على مستوى المتجر فقط (str.stores.country_ref_id/
+    city_ref_id)، تُعرَض لاحقًا ضمن Seller/Store Analytics عند تنفيذه."""
+    generated_at_utc: datetime
+    date_from: Optional[datetime]
+    date_to: Optional[datetime]
+    registrations_by_day: list  # [{"date": "YYYY-MM-DD", "count": int}] — يتطلب date_from/date_to فعليًا
+    users_by_role: dict         # {primary_role: count} — Snapshot
+    users_by_account_type: dict  # {"individual"|"business": count} — Snapshot
+    verified_sellers_count: int  # iam.users.is_verified_seller=true — Snapshot
+
+
 class RptRepository(ABC):
     """Read-Only بالكامل — لا أي abstractmethod للكتابة، عمدًا، لأن هذا Domain
     لا يملك بيانات، يقرأ فقط من Domains أخرى."""
@@ -169,6 +185,12 @@ class RptRepository(ABC):
 
     @abstractmethod
     def get_trending_parts(self, window_days: int) -> TrendingParts:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_user_analytics(
+        self, date_from: Optional[datetime], date_to: Optional[datetime],
+    ) -> UserAnalytics:
         raise NotImplementedError
 
 
@@ -452,6 +474,39 @@ class PostgresRptRepository(RptRepository):
             top_growing_parts=rows[:20],
         )
 
+    def get_user_analytics(self, date_from, date_to):
+        with self._connection.cursor() as cur:
+            cur.execute("SELECT primary_role, COUNT(*) AS c FROM iam.users GROUP BY primary_role")
+            users_by_role = {r["primary_role"]: r["c"] for r in cur.fetchall()}
+
+            cur.execute("SELECT account_type, COUNT(*) AS c FROM iam.users GROUP BY account_type")
+            users_by_account_type = {r["account_type"]: r["c"] for r in cur.fetchall()}
+
+            cur.execute("SELECT COUNT(*) AS c FROM iam.users WHERE is_verified_seller = true")
+            verified_sellers_count = cur.fetchone()["c"]
+
+            registrations_by_day = []
+            if date_from is not None or date_to is not None:
+                filters, params = [], {}
+                if date_from is not None:
+                    filters.append("created_at >= %(date_from)s")
+                    params["date_from"] = date_from
+                if date_to is not None:
+                    filters.append("created_at <= %(date_to)s")
+                    params["date_to"] = date_to
+                cur.execute(
+                    f"SELECT date_trunc('day', created_at)::date AS day, COUNT(*) AS c "
+                    f"FROM iam.users WHERE {' AND '.join(filters)} GROUP BY day ORDER BY day",
+                    params,
+                )
+                registrations_by_day = [{"date": r["day"].isoformat(), "count": r["c"]} for r in cur.fetchall()]
+
+        return UserAnalytics(
+            generated_at_utc=datetime.utcnow(), date_from=date_from, date_to=date_to,
+            registrations_by_day=registrations_by_day, users_by_role=users_by_role,
+            users_by_account_type=users_by_account_type, verified_sellers_count=verified_sellers_count,
+        )
+
 
 class InMemoryRptRepository(RptRepository):
     """للاختبارات فقط. لا يحاكي Repositories الأخرى — يقبل بيانات خام مُدخَلة
@@ -672,4 +727,39 @@ class InMemoryRptRepository(RptRepository):
             current_period_from=current_from, current_period_to=current_to,
             previous_period_from=previous_from, previous_period_to=previous_to,
             top_growing_parts=rows[:20],
+        )
+
+    def get_user_analytics(self, date_from, date_to):
+        users_by_role: dict = {}
+        users_by_account_type: dict = {}
+        verified_sellers_count = 0
+        for u in self.users:
+            role = u.get("primary_role")
+            if role is not None:
+                users_by_role[role] = users_by_role.get(role, 0) + 1
+            account_type = u.get("account_type")
+            if account_type is not None:
+                users_by_account_type[account_type] = users_by_account_type.get(account_type, 0) + 1
+            if u.get("is_verified_seller"):
+                verified_sellers_count += 1
+
+        registrations_by_day = []
+        if date_from is not None or date_to is not None:
+            by_day: dict = {}
+            for u in self.users:
+                created = u.get("created_at")
+                if created is None:
+                    continue
+                if date_from is not None and created < date_from:
+                    continue
+                if date_to is not None and created > date_to:
+                    continue
+                day = created.date().isoformat()
+                by_day[day] = by_day.get(day, 0) + 1
+            registrations_by_day = [{"date": d, "count": c} for d, c in sorted(by_day.items())]
+
+        return UserAnalytics(
+            generated_at_utc=datetime.utcnow(), date_from=date_from, date_to=date_to,
+            registrations_by_day=registrations_by_day, users_by_role=users_by_role,
+            users_by_account_type=users_by_account_type, verified_sellers_count=verified_sellers_count,
         )

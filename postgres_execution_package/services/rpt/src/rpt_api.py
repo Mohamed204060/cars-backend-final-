@@ -22,6 +22,7 @@ from rpt_service import (
     get_missing_parts_report_via_repository,
     get_search_analytics_via_repository,
     get_trending_parts_via_repository,
+    get_user_analytics_via_repository,
 )
 
 router = APIRouter(prefix="/api/v1/reports", tags=["reports"])
@@ -105,6 +106,16 @@ class TrendingPartsResponse(BaseModel):
     previous_period_from: str
     previous_period_to: str
     top_growing_parts: list[dict]
+
+
+class UserAnalyticsResponse(BaseModel):
+    generated_at_utc: str
+    date_from: Optional[str] = None
+    date_to: Optional[str] = None
+    registrations_by_day: list[dict]
+    users_by_role: dict[str, int]
+    users_by_account_type: dict[str, int]
+    verified_sellers_count: int
 
 
 def _require_admin(correlation_id: str, current_session: Session, auth_repo) -> None:
@@ -254,4 +265,28 @@ def get_trending_parts(
         current_period_from=tp.current_period_from.isoformat(), current_period_to=tp.current_period_to.isoformat(),
         previous_period_from=tp.previous_period_from.isoformat(), previous_period_to=tp.previous_period_to.isoformat(),
         top_growing_parts=tp.top_growing_parts,
+    )
+
+
+@router.get("/user-analytics", response_model=UserAnalyticsResponse)
+def get_user_analytics(
+    correlation_id: str = Depends(get_correlation_id),
+    current_session: Session = Depends(get_current_session),
+    rpt_repo=Depends(get_rpt_repository),
+    auth_repo=Depends(get_auth_repository_for_role_check),
+    date_from: Optional[datetime] = None,
+    date_to: Optional[datetime] = None,
+):
+    _require_admin(correlation_id, current_session, auth_repo)
+    try:
+        ua = get_user_analytics_via_repository(rpt_repo, date_from=date_from, date_to=date_to)
+    except InvalidDateRangeError:
+        raise error(correlation_id, status.HTTP_400_BAD_REQUEST, "INVALID_DATE_RANGE", "date_from يجب ألا يكون بعد date_to.")
+
+    return UserAnalyticsResponse(
+        generated_at_utc=ua.generated_at_utc.isoformat(),
+        date_from=ua.date_from.isoformat() if ua.date_from else None,
+        date_to=ua.date_to.isoformat() if ua.date_to else None,
+        registrations_by_day=ua.registrations_by_day, users_by_role=ua.users_by_role,
+        users_by_account_type=ua.users_by_account_type, verified_sellers_count=ua.verified_sellers_count,
     )
