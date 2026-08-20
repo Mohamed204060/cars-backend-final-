@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: منصة قطع غيار السيارات - Auto Parts Marketplace API
-  version: 1.22.0
+  version: 1.24.1
   description: 'مواصفة API تنفيذية، تغطي 15 عملية (Operations) عبر 14 مسارًا (Paths): الواجهات التمثيلية
     الخمس الأصلية الموثّقة بالتفصيل في التصميم التفصيلي (الحزمة 2)، بالإضافة إلى 5 عمليات خدمة Auth (اعتماد
     Contract Extension & Implementation Plan): تسجيل خروج، عرض/إضافة/إزالة وسائل الهوية، وعرض مزوّدي الهوية
@@ -1994,6 +1994,176 @@ components:
           type: object
           additionalProperties:
             type: integer
+    SearchAnalyticsResponse:
+      type: object
+      description: 'Batch 3A Slice 2: مصدرها ana.events (Analytics Event Foundation، Slice 1) بعد ربط
+        search_api.py فعليًا الآن بـsearch_performed/search_zero_results. لا بيانات قبل تاريخ Instrumentation
+        الفعلي — لا Backfill تاريخي. Date Semantics: كل الحقول هنا (search_volume/zero_result_count/
+        zero_result_rate/top_zero_result_vehicles/top_missing_search_terms) تُفلتَر بـdate_from/date_to
+        (مصدرها ana.events.occurred_at_utc) — بلا استثناء في هذا الـEndpoint تحديدًا.'
+      properties:
+        generated_at_utc:
+          type: string
+          format: date-time
+        date_from:
+          type: string
+          format: date-time
+          nullable: true
+        date_to:
+          type: string
+          format: date-time
+          nullable: true
+        search_volume:
+          type: integer
+        zero_result_count:
+          type: integer
+        zero_result_rate:
+          type: number
+          format: float
+        top_zero_result_vehicles:
+          type: array
+          items:
+            type: object
+            properties:
+              trim_ref_id:
+                type: string
+                nullable: true
+              count:
+                type: integer
+        top_missing_search_terms:
+          type: array
+          description: 'Pre-Gate Corrective #3: مصطلحات بحث فعلية بلا نتائج (normalized_query_term —
+            مُطبَّعة عبر normalize_arabic_search_text الموجودة أصلًا في search_service.py، ليست نصًا خامًا؛
+            بلا PII). فقط الأحداث التي فيها نص بحث فعلي؛ بحث بالمركبة فقط (trim_ref_id) لا يظهر هنا
+            (يظهر في top_zero_result_vehicles بدلًا منه).'
+          items:
+            type: object
+            properties:
+              normalized_query_term:
+                type: string
+              count:
+                type: integer
+    MissingPartsReportResponse:
+      type: object
+      description: 'Batch 3A Slice 2 — Missing Parts / Unmet Demand. Date Semantics صريحة (Pre-Gate
+        Corrective #4، لا يجوز افتراض توحُّد الدلالة الزمنية عبر الحقول):
+        zero_result_search_count وtop_missing_search_terms من ana.events — تُفلتَر بـdate_from/date_to.
+        purchase_requests_without_offers_count وtop_unmet_demand_parts من pur.purchase_requests —
+        Snapshot لحظي دائمًا، بلا فلترة زمنية إطلاقًا (نفس تعريف purchase_requests_without_offers في
+        Executive Dashboard حرفيًا) — حتى لو مُرِّر date_from/date_to، هذان الحقلان يعكسان الحالة الحالية.'
+      properties:
+        generated_at_utc:
+          type: string
+          format: date-time
+        date_from:
+          type: string
+          format: date-time
+          nullable: true
+        date_to:
+          type: string
+          format: date-time
+          nullable: true
+        zero_result_search_count:
+          type: integer
+        purchase_requests_without_offers_count:
+          type: integer
+          description: Snapshot لحظي — لا يتأثر بـdate_from/date_to.
+        top_unmet_demand_parts:
+          type: array
+          description: Snapshot لحظي — لا يتأثر بـdate_from/date_to.
+          items:
+            type: object
+            properties:
+              catalog_part_ref_id:
+                type: string
+              requests_without_offers:
+                type: integer
+        top_missing_search_terms:
+          type: array
+          description: 'Pre-Gate Corrective #3: نفس top_missing_search_terms في SearchAnalyticsResponse
+            حرفيًا (لا حساب مزدوج) — يُفلتَر بـdate_from/date_to (خلافًا للحقلين أعلاه).'
+          items:
+            type: object
+            properties:
+              normalized_query_term:
+                type: string
+              count:
+                type: integer
+    MarketplaceIntelligenceResponse:
+      type: object
+      description: 'Batch 3A Slice 2 — تركيب فوق Search Analytics/Missing Parts/Executive Dashboard، لا حساب
+        مزدوج لأي مؤشر. V1 Intelligence عملية قابلة للتفسير، ليست ML/Black Box. Date Semantics: demand_hotspot_vehicles/
+        unmet_demand_parts/request_to_offer_rate تتبع دلالة مصدرها الأصلي (مختلطة — راجع SearchAnalyticsResponse/
+        MissingPartsReportResponse/ExecutiveDashboardResponse)؛ catalog_parts_with_no_active_supply
+        وsellers_to_active_stores_ratio Snapshot لحظي دائمًا، بلا فلترة زمنية.'
+      properties:
+        generated_at_utc:
+          type: string
+          format: date-time
+        date_from:
+          type: string
+          format: date-time
+          nullable: true
+        date_to:
+          type: string
+          format: date-time
+          nullable: true
+        demand_hotspot_vehicles:
+          type: array
+          items:
+            type: object
+        unmet_demand_parts:
+          type: array
+          items:
+            type: object
+        catalog_parts_with_no_active_supply:
+          type: integer
+          description: 'Pre-Gate Corrective #2: قطع approved بلا أي عنصر مخزون status=''active'' فعليًا
+            (Supply حقيقية قابلة للشراء الآن حصرًا — out_of_stock مُستبعَدة عمدًا، خلافًا لتعريف
+            "قابل للاكتشاف في البحث" المستخدَم في search_repository.py). Snapshot لحظي.'
+        sellers_to_active_stores_ratio:
+          type: number
+          format: float
+          description: 'Pre-Gate Corrective #1: sellers_total (كل الأدوار بائع) ÷ عدد المتاجر status=''active''
+            حصرًا (لا creating/suspended/archived — تلك لا تمثّل تغطية عرض فعلية). Snapshot لحظي.'
+        request_to_offer_rate:
+          type: number
+          format: float
+    TrendingPartsResponse:
+      type: object
+      description: 'Batch 3A Slice 2 — مقارنة فترتين متساويتَي الطول من pur.purchase_requests.created_at
+        مباشرة (لا يحتاج ana.events). لا Backfill تاريخي.'
+      properties:
+        generated_at_utc:
+          type: string
+          format: date-time
+        window_days:
+          type: integer
+        current_period_from:
+          type: string
+          format: date-time
+        current_period_to:
+          type: string
+          format: date-time
+        previous_period_from:
+          type: string
+          format: date-time
+        previous_period_to:
+          type: string
+          format: date-time
+        top_growing_parts:
+          type: array
+          items:
+            type: object
+            properties:
+              catalog_part_ref_id:
+                type: string
+              current_count:
+                type: integer
+              previous_count:
+                type: integer
+              growth:
+                type: integer
 paths:
   /api/v1/reports/executive-dashboard:
     get:
@@ -2027,6 +2197,197 @@ paths:
                 $ref: '#/components/schemas/ExecutiveDashboardResponse'
         '400':
           description: date_from بعد date_to
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: لا جلسة صالحة
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: يتطلب صلاحية مدير النظام
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/reports/search-analytics:
+    get:
+      operationId: getSearchAnalytics
+      summary: تحليلات البحث (مدير النظام حصريًا، Batch 3A Slice 2)
+      description: 'مصدرها ana.events بعد ربط GET /search/parts فعليًا بأحداث search_performed/search_zero_results
+        (Slice 2). لا بيانات قبل تاريخ الربط الفعلي — لا Backfill تاريخي. top_zero_result_vehicles مُجمَّعة حسب
+        trim_ref_id فقط (لا نص بحث خام مخزَّن، Data Minimization).'
+      x-traceability:
+        requirements: []
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: date_from
+        in: query
+        schema:
+          type: string
+          format: date-time
+      - name: date_to
+        in: query
+        schema:
+          type: string
+          format: date-time
+      responses:
+        '200':
+          description: تحليلات البحث
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchAnalyticsResponse'
+        '400':
+          description: date_from بعد date_to
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: لا جلسة صالحة
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: يتطلب صلاحية مدير النظام
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/reports/missing-parts:
+    get:
+      operationId: getMissingPartsReport
+      summary: القطع المفقودة / الطلب غير المُلبَّى (مدير النظام حصريًا، Batch 3A Slice 2)
+      description: 'يدمج مصدرين: zero_result_search_count من ana.events (طلب بحث لم يُوجَد له نتيجة)،
+        وpurchase_requests_without_offers_count/top_unmet_demand_parts من pur.purchase_requests (Snapshot —
+        نفس تعريف purchase_requests_without_offers في Executive Dashboard حرفيًا، لا صيغة ثانية).'
+      x-traceability:
+        requirements: []
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: date_from
+        in: query
+        schema:
+          type: string
+          format: date-time
+      - name: date_to
+        in: query
+        schema:
+          type: string
+          format: date-time
+      responses:
+        '200':
+          description: تقرير القطع المفقودة
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MissingPartsReportResponse'
+        '400':
+          description: date_from بعد date_to
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: لا جلسة صالحة
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: يتطلب صلاحية مدير النظام
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/reports/marketplace-intelligence:
+    get:
+      operationId: getMarketplaceIntelligence
+      summary: ذكاء السوق (مدير النظام حصريًا، Batch 3A Slice 2)
+      description: 'V1 Intelligence عملية قابلة للتفسير (ليست ML/Black Box) — تركيب فوق Search Analytics/
+        Missing Parts/Executive Dashboard، لا حساب مزدوج لأي مؤشر.'
+      x-traceability:
+        requirements: []
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: date_from
+        in: query
+        schema:
+          type: string
+          format: date-time
+      - name: date_to
+        in: query
+        schema:
+          type: string
+          format: date-time
+      responses:
+        '200':
+          description: مؤشرات ذكاء السوق
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MarketplaceIntelligenceResponse'
+        '400':
+          description: date_from بعد date_to
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: لا جلسة صالحة
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: يتطلب صلاحية مدير النظام
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/reports/trending-parts:
+    get:
+      operationId: getTrendingParts
+      summary: القطع الأكثر نموًا في الطلب (مدير النظام حصريًا، Batch 3A Slice 2)
+      description: 'مقارنة فترتين متساويتَي الطول (window_days) من pur.purchase_requests.created_at مباشرة —
+        لا يحتاج ana.events. لا Backfill تاريخي.'
+      x-traceability:
+        requirements: []
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: window_days
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 365
+          default: 30
+      responses:
+        '200':
+          description: القطع الأكثر نموًا في الطلب
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrendingPartsResponse'
+        '400':
+          description: window_days خارج النطاق المسموح
           content:
             application/json:
               schema:
