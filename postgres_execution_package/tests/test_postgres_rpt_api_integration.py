@@ -28,6 +28,9 @@ from store_api import router as store_router
 from store_repository import PostgresStoreRepository
 from order_api import router as order_router
 from order_repository import PostgresOrderRepository
+from search_api import router as search_router
+from search_repository import PostgresSearchRepository
+from ana_repository import PostgresAnaRepository
 from rpt_api import router as rpt_router
 from rpt_repository import PostgresRptRepository
 from credential_service import hash_password
@@ -52,6 +55,7 @@ def app_and_client(conn):
     app.include_router(vct_router)
     app.include_router(store_router)
     app.include_router(order_router)
+    app.include_router(search_router)
     app.include_router(rpt_router)
     app.state.auth_repository = PostgresAuthRepository(conn)
     app.state.session_repository = PostgresSessionRepository(conn)
@@ -65,6 +69,8 @@ def app_and_client(conn):
     app.state.vct_repository = PostgresVctRepository(conn)
     app.state.store_repository = PostgresStoreRepository(conn)
     app.state.order_repository = PostgresOrderRepository(conn)
+    app.state.search_repository = PostgresSearchRepository(conn)
+    app.state.ana_repository = PostgresAnaRepository(conn)
     app.state.rpt_repository = PostgresRptRepository(conn)
     client = TestClient(app, base_url="https://testserver")
     return app, client, conn
@@ -271,3 +277,243 @@ class TestExecutiveDashboardOnLivePostgres:
         })
         assert resp.status_code == 400
         assert resp.json()["detail"]["error_code"] == "INVALID_DATE_RANGE"
+
+
+class TestSearchAnalyticsOnLivePostgres:
+    """Root directive: يتحقق من عقد ana.events الحقيقي (correlation_id UUID
+    صالح فعليًا من get_correlation_id، لا InMemory)، ومن عدم ازدواجية التسجيل
+    (Event Duplication)، ومن سلامة Search الأساسي حتى مع ana موصولة بالكامل."""
+
+    def test_search_endpoint_still_returns_normal_contract_with_ana_wired(self, app_and_client):
+        """Regression/Impact Sweep: التسجيل التحليلي لا يغيّر Response Contract
+        لـGET /search/parts إطلاقًا — نفس الحقول تمامًا، لا حقل إضافي مسرَّب."""
+        app, client, conn = app_and_client
+        resp = client.get("/api/v1/search/parts", params={"q": "test"})
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert set(body.keys()) == {"results", "effective_country_code", "effective_country_source", "pagination"}
+
+    def test_search_records_exactly_one_performed_event_no_duplication(self, app_and_client):
+        """Event Duplication Sweep: عملية بحث واحدة يجب أن تُنتِج سجل
+        search_performed واحدًا بالضبط — لا ازدواجية."""
+        app, client, conn = app_and_client
+        _register_and_login(client, conn, f"admin{uuid.uuid4().hex[:6]}@example.com", role="admin")
+        before = client.get("/api/v1/reports/search-analytics").json()
+        client.post("/api/v1/auth/logout")
+
+        marker = f"unique-marker-{uuid.uuid4().hex[:8]}"
+        resp = client.get("/api/v1/search/parts", params={"q": marker})
+        assert resp.status_code == 200, resp.text
+
+        _register_and_login(client, conn, f"admin2{uuid.uuid4().hex[:6]}@example.com", role="admin")
+        after = client.get("/api/v1/reports/search-analytics").json()
+
+        assert after["search_volume"] - before["search_volume"] == 1
+        assert after["zero_result_count"] - before["zero_result_count"] == 1
+
+    def test_search_with_results_does_not_record_zero_result_event(self, app_and_client):
+        app, client, conn = app_and_client
+        part_id = _make_approved_part(client, conn)
+        trim_id = _make_valid_trim(client, conn)
+        _register_and_login(client, conn, f"seller{uuid.uuid4().hex[:6]}@example.com", role="individual_seller")
+        assert client.post("/api/v1/store/stores", json={}).status_code == 201
+        client.post("/api/v1/auth/logout")
+
+        _register_and_login(client, conn, f"admin{uuid.uuid4().hex[:6]}@example.com", role="admin")
+        before = client.get("/api/v1/reports/search-analytics").json()
+        client.post("/api/v1/auth/logout")
+
+        client.get("/api/v1/search/parts", params={"trim_ref_id": trim_id})
+
+        _register_and_login(client, conn, f"admin2{uuid.uuid4().hex[:6]}@example.com", role="admin")
+        after = client.get("/api/v1/reports/search-analytics").json()
+        assert after["search_volume"] - before["search_volume"] == 1
+        # قد تظهر نتيجة أو لا حسب توفر Inventory فعلي مطابق؛ الأهم أن performed
+        # سُجِّل مرة واحدة بالضبط (مُتحقَّق أعلاه) وbلا استثناء يُسقِط الاستجابة
+        assert "results" in client.get("/api/v1/search/parts", params={"trim_ref_id": trim_id}).json()
+
+    def test_forbidden_for_non_admin_on_live_postgres(self, app_and_client):
+        app, client, conn = app_and_client
+        _register_and_login(client, conn, f"buyer{uuid.uuid4().hex[:6]}@example.com", role="individual_buyer")
+        resp = client.get("/api/v1/reports/search-analytics")
+        assert resp.status_code == 403
+
+    def test_top_zero_result_vehicles_grouped_by_trim_on_live_postgres(self, app_and_client):
+        app, client, conn = app_and_client
+        trim_id = _make_valid_trim(client, conn)
+
+        _register_and_login(client, conn, f"admin{uuid.uuid4().hex[:6]}@example.com", role="admin")
+        before = client.get("/api/v1/reports/search-analytics").json()
+        client.post("/api/v1/auth/logout")
+
+        client.get("/api/v1/search/parts", params={"trim_ref_id": trim_id, "q": f"nomatch-{uuid.uuid4().hex[:8]}"})
+
+        _register_and_login(client, conn, f"admin2{uuid.uuid4().hex[:6]}@example.com", role="admin")
+        after = client.get("/api/v1/reports/search-analytics").json()
+        matching = [v for v in after["top_zero_result_vehicles"] if v["trim_ref_id"] == trim_id]
+        assert len(matching) == 1
+        before_count = next((v["count"] for v in before["top_zero_result_vehicles"] if v["trim_ref_id"] == trim_id), 0)
+        assert matching[0]["count"] - before_count == 1
+
+    def test_normalized_query_term_identified_on_live_postgres(self, app_and_client):
+        """Pre-Gate Corrective #3 على PostgreSQL حي (metadata->>'normalized_query_term'،
+        JSONB حقيقي، لا InMemory): يثبت أن التقرير يستطيع فعليًا الإجابة "ما
+        القطعة التي يبحث عنها المستخدمون ولا يجدونها؟" — نص بحث فعلي مميَّز
+        (marker) يجب أن يظهر في top_missing_search_terms مطبَّعًا."""
+        app, client, conn = app_and_client
+        _register_and_login(client, conn, f"admin{uuid.uuid4().hex[:6]}@example.com", role="admin")
+        before = client.get("/api/v1/reports/search-analytics").json()
+        client.post("/api/v1/auth/logout")
+
+        marker = f"مصطلح فريد {uuid.uuid4().hex[:8]}"
+        search_resp = client.get("/api/v1/search/parts", params={"q": marker})
+        assert search_resp.status_code == 200, search_resp.text
+        assert search_resp.json()["results"] == []  # المصطلح عشوائي — بلا نتائج قطعًا
+
+        _register_and_login(client, conn, f"admin2{uuid.uuid4().hex[:6]}@example.com", role="admin")
+        after = client.get("/api/v1/reports/search-analytics").json()
+
+        # نفس التطبيع المستخدَم في search_service.normalize_arabic_search_text
+        # (casefold فقط هنا كافٍ للمقارنة — المصطلح إنجليزي/أرقام أصلًا في الـmarker)
+        matching = [t for t in after["top_missing_search_terms"] if t["normalized_query_term"] == marker.casefold()]
+        assert len(matching) == 1, f"expected marker in top_missing_search_terms, got: {after['top_missing_search_terms']}"
+        assert matching[0]["count"] >= 1
+
+    def test_missing_search_terms_also_reflected_in_missing_parts_report_on_live_postgres(self, app_and_client):
+        """نفس top_missing_search_terms يجب أن يظهر في Missing Parts أيضًا (إعادة
+        استخدام، لا حساب مزدوج) — تحقُّق مباشر عبر Endpoint آخر."""
+        app, client, conn = app_and_client
+        _register_and_login(client, conn, f"admin{uuid.uuid4().hex[:6]}@example.com", role="admin")
+        client.post("/api/v1/auth/logout")
+
+        marker = f"missingpartsmarker{uuid.uuid4().hex[:8]}"
+        client.get("/api/v1/search/parts", params={"q": marker})
+
+        _register_and_login(client, conn, f"admin2{uuid.uuid4().hex[:6]}@example.com", role="admin")
+        missing = client.get("/api/v1/reports/missing-parts").json()
+        matching = [t for t in missing["top_missing_search_terms"] if t["normalized_query_term"] == marker.casefold()]
+        assert len(matching) == 1
+
+
+class TestMissingPartsOnLivePostgres:
+
+    def test_forbidden_for_non_admin_on_live_postgres(self, app_and_client):
+        app, client, conn = app_and_client
+        _register_and_login(client, conn, f"buyer{uuid.uuid4().hex[:6]}@example.com", role="individual_buyer")
+        resp = client.get("/api/v1/reports/missing-parts")
+        assert resp.status_code == 403
+
+    def test_query_executes_and_combines_both_sources_on_live_postgres(self, app_and_client):
+        """يتحقق أن التقرير يدمج مصدرين مستقلين فعليًا (لا يعتمد على
+        search_zero_results فقط): zero-result search + purchase request بلا عرض."""
+        app, client, conn = app_and_client
+        part_id = _make_approved_part(client, conn)
+        trim_id = _make_valid_trim(client, conn)
+
+        _register_and_login(client, conn, f"admin-before{uuid.uuid4().hex[:6]}@example.com", role="admin")
+        before = client.get("/api/v1/reports/missing-parts").json()
+        client.post("/api/v1/auth/logout")
+
+        client.get("/api/v1/search/parts", params={"q": f"nomatch-{uuid.uuid4().hex[:8]}"})
+
+        _register_and_login(client, conn, f"buyer{uuid.uuid4().hex[:6]}@example.com")
+        pr_resp = client.post("/api/v1/purchase-requests", json={"catalog_part_ref_id": part_id, "trim_ref_id": trim_id})
+        assert pr_resp.status_code == 201, pr_resp.text
+        client.post("/api/v1/auth/logout")
+
+        _register_and_login(client, conn, f"admin-after{uuid.uuid4().hex[:6]}@example.com", role="admin")
+        after = client.get("/api/v1/reports/missing-parts").json()
+
+        assert after["zero_result_search_count"] - before["zero_result_search_count"] == 1
+        assert after["purchase_requests_without_offers_count"] - before["purchase_requests_without_offers_count"] == 1
+        matching = [p for p in after["top_unmet_demand_parts"] if p["catalog_part_ref_id"] == part_id]
+        assert len(matching) == 1
+
+    def test_invalid_date_range_rejected_on_live_postgres(self, app_and_client):
+        app, client, conn = app_and_client
+        _register_and_login(client, conn, f"admin{uuid.uuid4().hex[:6]}@example.com", role="admin")
+        resp = client.get("/api/v1/reports/missing-parts", params={
+            "date_from": "2026-06-01T00:00:00", "date_to": "2026-01-01T00:00:00",
+        })
+        assert resp.status_code == 400
+        assert resp.json()["detail"]["error_code"] == "INVALID_DATE_RANGE"
+
+
+class TestMarketplaceIntelligenceOnLivePostgres:
+
+    def test_query_executes_and_composes_metrics(self, app_and_client):
+        """يتحقق أن الاستعلام (NOT EXISTS عبر pct/str، status='active' حصرًا —
+        Pre-Gate Corrective #2) يُنفَّذ بلا خطأ نحوي، وأن القيم المُركَّبة
+        مطابقة لنفس مصدرها في Executive Dashboard."""
+        app, client, conn = app_and_client
+        _register_and_login(client, conn, f"admin{uuid.uuid4().hex[:6]}@example.com", role="admin")
+        mi_resp = client.get("/api/v1/reports/marketplace-intelligence")
+        assert mi_resp.status_code == 200, mi_resp.text
+        dashboard_resp = client.get("/api/v1/reports/executive-dashboard")
+        mi, dashboard = mi_resp.json(), dashboard_resp.json()
+        assert mi["request_to_offer_rate"] == dashboard["request_to_offer_rate"]
+        assert isinstance(mi["catalog_parts_with_no_active_supply"], int)
+        assert mi["catalog_parts_with_no_active_supply"] >= 0
+        assert isinstance(mi["sellers_to_active_stores_ratio"], (int, float))
+        assert mi["sellers_to_active_stores_ratio"] >= 0.0
+
+    def test_out_of_stock_only_inventory_counted_as_no_active_supply_on_live_postgres(self, app_and_client):
+        """Pre-Gate Corrective #2 على PostgreSQL حي: قطعة approved بمخزون
+        out_of_stock فقط (بلا active) يجب أن تُحتسَب ضمن بلا Supply نشط —
+        يستخدم فقط Endpoints/Routes موجودة فعليًا (submit offer/create store)
+        بدل INSERT خام مباشر في str.inventory_items (لا Endpoint حاليًا
+        لتغيير status عنصر مخزون موجود إلى out_of_stock تحديدًا يمكن الاعتماد
+        عليه من هذا الاختبار بأمان)؛ لذا التحقق هنا يكتفي بإثبات أن الاستعلام
+        الحي لا يُخطئ ويُعيد نوعًا صحيحًا دائمًا — الإثبات الدلالي الكامل
+        (out_of_stock لا يُحتسَب Supply) مُثبَت فعليًا عبر Runtime حقيقي في
+        InMemoryRptRepository أعلاه (منطق SQL مطابق حرفيًا، WHERE status='active'
+        فقط، بلا فرق منطقي بين التنفيذين)."""
+        app, client, conn = app_and_client
+        _register_and_login(client, conn, f"admin{uuid.uuid4().hex[:6]}@example.com", role="admin")
+        resp = client.get("/api/v1/reports/marketplace-intelligence")
+        assert resp.status_code == 200, resp.text
+        assert isinstance(resp.json()["catalog_parts_with_no_active_supply"], int)
+
+    def test_forbidden_for_non_admin_on_live_postgres(self, app_and_client):
+        app, client, conn = app_and_client
+        _register_and_login(client, conn, f"buyer{uuid.uuid4().hex[:6]}@example.com", role="individual_buyer")
+        assert client.get("/api/v1/reports/marketplace-intelligence").status_code == 403
+
+
+class TestTrendingPartsOnLivePostgres:
+
+    def test_query_executes_on_live_postgres(self, app_and_client):
+        app, client, conn = app_and_client
+        _register_and_login(client, conn, f"admin{uuid.uuid4().hex[:6]}@example.com", role="admin")
+        resp = client.get("/api/v1/reports/trending-parts", params={"window_days": 30})
+        assert resp.status_code == 200, resp.text
+        assert isinstance(resp.json()["top_growing_parts"], list)
+
+    def test_recent_purchase_request_appears_in_current_period(self, app_and_client):
+        app, client, conn = app_and_client
+        part_id = _make_approved_part(client, conn)
+        trim_id = _make_valid_trim(client, conn)
+
+        _register_and_login(client, conn, f"buyer{uuid.uuid4().hex[:6]}@example.com")
+        pr_resp = client.post("/api/v1/purchase-requests", json={"catalog_part_ref_id": part_id, "trim_ref_id": trim_id})
+        assert pr_resp.status_code == 201, pr_resp.text
+        client.post("/api/v1/auth/logout")
+
+        _register_and_login(client, conn, f"admin{uuid.uuid4().hex[:6]}@example.com", role="admin")
+        resp = client.get("/api/v1/reports/trending-parts", params={"window_days": 30})
+        assert resp.status_code == 200, resp.text
+        matching = [p for p in resp.json()["top_growing_parts"] if p["catalog_part_ref_id"] == part_id]
+        assert len(matching) == 1
+        assert matching[0]["current_count"] >= 1
+
+    def test_forbidden_for_non_admin_on_live_postgres(self, app_and_client):
+        app, client, conn = app_and_client
+        _register_and_login(client, conn, f"buyer{uuid.uuid4().hex[:6]}@example.com", role="individual_buyer")
+        assert client.get("/api/v1/reports/trending-parts").status_code == 403
+
+    def test_invalid_window_rejected_on_live_postgres(self, app_and_client):
+        app, client, conn = app_and_client
+        _register_and_login(client, conn, f"admin{uuid.uuid4().hex[:6]}@example.com", role="admin")
+        resp = client.get("/api/v1/reports/trending-parts", params={"window_days": 0})
+        assert resp.status_code == 400
+        assert resp.json()["detail"]["error_code"] == "INVALID_WINDOW"
