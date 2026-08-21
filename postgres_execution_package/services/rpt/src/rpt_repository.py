@@ -54,7 +54,7 @@ search_api.py فعليًا الآن (Slice 2) بحدثَي search_performed/sear
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 
@@ -155,6 +155,50 @@ class UserAnalytics:
     verified_sellers_count: int  # iam.users.is_verified_seller=true — Snapshot
 
 
+@dataclass
+class SellerStoreAnalytics:
+    """Consolidated Detailed Analytics — الجزء الثاني (Seller/Store)."""
+    generated_at_utc: datetime
+    date_from: Optional[datetime]
+    date_to: Optional[datetime]
+    stores_by_status: dict            # Snapshot
+    sellers_without_store_count: int  # Snapshot — بائع مسجَّل بلا متجر (فجوة تفعيل)
+    active_stores_without_inventory_count: int  # Snapshot — متجر نشط بلا أي عنصر مخزون إطلاقًا
+    top_stores_by_offer_count: list   # [{"store_id": str, "offer_count": int}] أعلى 20 — Snapshot
+    new_stores_count: int             # يتطلب date_from/date_to فعليًا (created_at ضمن المدى)، وإلا 0
+
+
+@dataclass
+class InventoryCatalogAnalytics:
+    """Consolidated Detailed Analytics — الجزء الثالث (Inventory/Catalog).
+    لا 'عناصر بلا صور' هنا عمدًا: primary_photo_id عمود يتيم فعليًا (GAP-B
+    موثَّقة مسبقًا — لا بنية تحتية لصور المخزون بعد)، فكل العناصر ستظهر
+    'بلا صورة' بلا استثناء — مؤشر مضلِّل تمامًا، ليس إشارة سلوك بائع حقيقية."""
+    generated_at_utc: datetime
+    date_from: Optional[datetime]
+    date_to: Optional[datetime]
+    inventory_items_by_status: dict          # Snapshot
+    inventory_items_by_pricing_mode: dict    # {"fixed_price"|"contact_for_price": count} — Snapshot
+    stale_active_inventory_items_count: int  # status='active' وupdated_at أقدم من 30 يومًا — Snapshot
+    catalog_parts_by_status: dict            # Snapshot
+    manufacturers_by_status: dict            # Snapshot
+    models_total: int                        # Snapshot (بلا تفصيل حالة — غير حاسم لهذا المستوى)
+    generations_total: int                   # Snapshot (لا عمود status في vct.generations أصلًا)
+    trims_total: int                         # Snapshot (لا عمود status في vct.trims أصلًا)
+
+
+@dataclass
+class PurchaseRequestOfferAnalytics:
+    """Consolidated Detailed Analytics — الجزء الرابع (Purchase Request/Offer)."""
+    generated_at_utc: datetime
+    date_from: Optional[datetime]
+    date_to: Optional[datetime]
+    offers_by_status: dict                        # Snapshot
+    withdrawn_offers_count: int                    # Snapshot
+    avg_hours_to_first_offer: Optional[float]      # Snapshot — None إن لا بيانات (لا صفر مضلِّل)
+    avg_hours_to_accepted_offer: Optional[float]   # Snapshot — None إن لا بيانات
+
+
 class RptRepository(ABC):
     """Read-Only بالكامل — لا أي abstractmethod للكتابة، عمدًا، لأن هذا Domain
     لا يملك بيانات، يقرأ فقط من Domains أخرى."""
@@ -191,6 +235,24 @@ class RptRepository(ABC):
     def get_user_analytics(
         self, date_from: Optional[datetime], date_to: Optional[datetime],
     ) -> UserAnalytics:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_seller_store_analytics(
+        self, date_from: Optional[datetime], date_to: Optional[datetime],
+    ) -> SellerStoreAnalytics:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_inventory_catalog_analytics(
+        self, date_from: Optional[datetime], date_to: Optional[datetime],
+    ) -> InventoryCatalogAnalytics:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_purchase_request_offer_analytics(
+        self, date_from: Optional[datetime], date_to: Optional[datetime],
+    ) -> PurchaseRequestOfferAnalytics:
         raise NotImplementedError
 
 
@@ -507,6 +569,118 @@ class PostgresRptRepository(RptRepository):
             users_by_account_type=users_by_account_type, verified_sellers_count=verified_sellers_count,
         )
 
+    def get_seller_store_analytics(self, date_from, date_to):
+        with self._connection.cursor() as cur:
+            cur.execute("SELECT status, COUNT(*) AS c FROM str.stores GROUP BY status")
+            stores_by_status = {r["status"]: r["c"] for r in cur.fetchall()}
+
+            cur.execute("""
+                SELECT COUNT(*) AS c FROM iam.users u
+                WHERE u.primary_role IN ('individual_seller', 'business_seller')
+                AND NOT EXISTS (SELECT 1 FROM str.stores s WHERE s.owner_user_ref_id = u.id)
+            """)
+            sellers_without_store_count = cur.fetchone()["c"]
+
+            cur.execute("""
+                SELECT COUNT(*) AS c FROM str.stores s
+                WHERE s.status = 'active'
+                AND NOT EXISTS (SELECT 1 FROM str.inventory_items ii WHERE ii.store_id = s.id)
+            """)
+            active_stores_without_inventory_count = cur.fetchone()["c"]
+
+            cur.execute("""
+                SELECT seller_store_ref_id, COUNT(*) AS c FROM pur.offers
+                GROUP BY seller_store_ref_id ORDER BY c DESC LIMIT 20
+            """)
+            top_stores_by_offer_count = [{"store_id": r["seller_store_ref_id"], "offer_count": r["c"]} for r in cur.fetchall()]
+
+            new_stores_count = 0
+            if date_from is not None or date_to is not None:
+                filters, params = [], {}
+                if date_from is not None:
+                    filters.append("created_at >= %(date_from)s")
+                    params["date_from"] = date_from
+                if date_to is not None:
+                    filters.append("created_at <= %(date_to)s")
+                    params["date_to"] = date_to
+                cur.execute(f"SELECT COUNT(*) AS c FROM str.stores WHERE {' AND '.join(filters)}", params)
+                new_stores_count = cur.fetchone()["c"]
+
+        return SellerStoreAnalytics(
+            generated_at_utc=datetime.utcnow(), date_from=date_from, date_to=date_to,
+            stores_by_status=stores_by_status, sellers_without_store_count=sellers_without_store_count,
+            active_stores_without_inventory_count=active_stores_without_inventory_count,
+            top_stores_by_offer_count=top_stores_by_offer_count, new_stores_count=new_stores_count,
+        )
+
+    def get_inventory_catalog_analytics(self, date_from, date_to):
+        with self._connection.cursor() as cur:
+            cur.execute("SELECT status, COUNT(*) AS c FROM str.inventory_items GROUP BY status")
+            inventory_items_by_status = {r["status"]: r["c"] for r in cur.fetchall()}
+
+            cur.execute("SELECT pricing_mode, COUNT(*) AS c FROM str.inventory_items GROUP BY pricing_mode")
+            inventory_items_by_pricing_mode = {r["pricing_mode"]: r["c"] for r in cur.fetchall()}
+
+            cur.execute("""
+                SELECT COUNT(*) AS c FROM str.inventory_items
+                WHERE status = 'active' AND updated_at < now() - interval '30 days'
+            """)
+            stale_active_inventory_items_count = cur.fetchone()["c"]
+
+            cur.execute("SELECT status, COUNT(*) AS c FROM pct.catalog_parts GROUP BY status")
+            catalog_parts_by_status = {r["status"]: r["c"] for r in cur.fetchall()}
+
+            cur.execute("SELECT status, COUNT(*) AS c FROM vct.manufacturers GROUP BY status")
+            manufacturers_by_status = {r["status"]: r["c"] for r in cur.fetchall()}
+
+            cur.execute("SELECT COUNT(*) AS c FROM vct.models")
+            models_total = cur.fetchone()["c"]
+            cur.execute("SELECT COUNT(*) AS c FROM vct.generations")
+            generations_total = cur.fetchone()["c"]
+            cur.execute("SELECT COUNT(*) AS c FROM vct.trims")
+            trims_total = cur.fetchone()["c"]
+
+        return InventoryCatalogAnalytics(
+            generated_at_utc=datetime.utcnow(), date_from=date_from, date_to=date_to,
+            inventory_items_by_status=inventory_items_by_status,
+            inventory_items_by_pricing_mode=inventory_items_by_pricing_mode,
+            stale_active_inventory_items_count=stale_active_inventory_items_count,
+            catalog_parts_by_status=catalog_parts_by_status, manufacturers_by_status=manufacturers_by_status,
+            models_total=models_total, generations_total=generations_total, trims_total=trims_total,
+        )
+
+    def get_purchase_request_offer_analytics(self, date_from, date_to):
+        with self._connection.cursor() as cur:
+            cur.execute("SELECT status, COUNT(*) AS c FROM pur.offers GROUP BY status")
+            offers_by_status = {r["status"]: r["c"] for r in cur.fetchall()}
+            withdrawn_offers_count = offers_by_status.get("withdrawn", 0)
+
+            cur.execute("""
+                SELECT AVG(EXTRACT(EPOCH FROM (first_offer.min_created_at - pr.created_at)) / 3600.0) AS avg_hours
+                FROM pur.purchase_requests pr
+                JOIN (
+                    SELECT purchase_request_id, MIN(created_at) AS min_created_at
+                    FROM pur.offers GROUP BY purchase_request_id
+                ) first_offer ON first_offer.purchase_request_id = pr.id
+            """)
+            row = cur.fetchone()
+            avg_hours_to_first_offer = float(row["avg_hours"]) if row["avg_hours"] is not None else None
+
+            cur.execute("""
+                SELECT AVG(EXTRACT(EPOCH FROM (o.updated_at - pr.created_at)) / 3600.0) AS avg_hours
+                FROM pur.purchase_requests pr
+                JOIN pur.offers o ON o.purchase_request_id = pr.id AND o.status = 'accepted'
+            """)
+            row2 = cur.fetchone()
+            avg_hours_to_accepted_offer = float(row2["avg_hours"]) if row2["avg_hours"] is not None else None
+
+        return PurchaseRequestOfferAnalytics(
+            generated_at_utc=datetime.utcnow(), date_from=date_from, date_to=date_to,
+            offers_by_status=offers_by_status, withdrawn_offers_count=withdrawn_offers_count,
+            avg_hours_to_first_offer=avg_hours_to_first_offer,
+            avg_hours_to_accepted_offer=avg_hours_to_accepted_offer,
+        )
+
 
 class InMemoryRptRepository(RptRepository):
     """للاختبارات فقط. لا يحاكي Repositories الأخرى — يقبل بيانات خام مُدخَلة
@@ -514,14 +688,18 @@ class InMemoryRptRepository(RptRepository):
     هنا عن أي اعتماد على Domains أخرى، تمامًا كما توصي به طريقة SSOT أعلاه."""
 
     def __init__(self):
-        self.users: list[dict] = []           # {"status": str, "primary_role": str, "created_at": datetime}
-        self.stores: list[dict] = []           # {"status": str}
-        self.inventory_items: list[dict] = []  # {"status": str, "catalog_part_ref_id": str (اختياري، لـMarketplace Intelligence فقط)}
+        self.users: list[dict] = []           # {"status": str, "primary_role": str, "account_type": str (اختياري), "is_verified_seller": bool (اختياري), "created_at": datetime, "id": str (اختياري، لـSeller/Store فقط)}
+        self.stores: list[dict] = []           # {"status": str, "id": str (اختياري), "owner_user_ref_id": str (اختياري), "created_at": datetime (اختياري)}
+        self.inventory_items: list[dict] = []  # {"status": str, "catalog_part_ref_id": str (اختياري), "store_id": str (اختياري), "pricing_mode": str (اختياري), "updated_at": datetime (اختياري)}
         self.catalog_parts: list[dict] = []    # {"status": str, "id": str (اختياري، لـMarketplace Intelligence فقط)}
-        self.purchase_requests: list[dict] = []  # {"id": str, "status": str, "catalog_part_ref_id": str, "created_at": datetime (اختياري، لـTrending Parts فقط)}
-        self.offers: list[dict] = []           # {"purchase_request_id": str, "status": str}
+        self.purchase_requests: list[dict] = []  # {"id": str, "status": str, "catalog_part_ref_id": str, "created_at": datetime (اختياري)}
+        self.offers: list[dict] = []           # {"purchase_request_id": str, "status": str, "seller_store_ref_id": str (اختياري), "created_at": datetime (اختياري)، "updated_at": datetime (اختياري)}
         self.subscriptions: list[dict] = []    # {"status": str, "plan_code": str}
         self.ana_events: list[dict] = []       # {"event_type": str, "occurred_at_utc": datetime, "metadata": dict}
+        self.manufacturers: list[dict] = []    # {"status": str}
+        self.models: list[dict] = []           # []، فقط للعدّ
+        self.generations: list[dict] = []      # []، فقط للعدّ
+        self.trims: list[dict] = []            # []، فقط للعدّ
 
     def get_executive_dashboard(self, date_from, date_to):
         users_by_status: dict = {}
@@ -762,4 +940,115 @@ class InMemoryRptRepository(RptRepository):
             generated_at_utc=datetime.utcnow(), date_from=date_from, date_to=date_to,
             registrations_by_day=registrations_by_day, users_by_role=users_by_role,
             users_by_account_type=users_by_account_type, verified_sellers_count=verified_sellers_count,
+        )
+
+    def get_seller_store_analytics(self, date_from, date_to):
+        stores_by_status: dict = {}
+        for s in self.stores:
+            stores_by_status[s["status"]] = stores_by_status.get(s["status"], 0) + 1
+
+        store_owner_ids = {s.get("owner_user_ref_id") for s in self.stores if s.get("owner_user_ref_id") is not None}
+        sellers_without_store_count = sum(
+            1 for u in self.users
+            if u.get("primary_role") in ("individual_seller", "business_seller") and u.get("id") not in store_owner_ids
+        )
+
+        stores_with_inventory = {i.get("store_id") for i in self.inventory_items if i.get("store_id") is not None}
+        active_stores_without_inventory_count = sum(
+            1 for s in self.stores if s.get("status") == "active" and s.get("id") not in stores_with_inventory
+        )
+
+        offer_counts: dict = {}
+        for o in self.offers:
+            key = o.get("seller_store_ref_id")
+            if key is not None:
+                offer_counts[key] = offer_counts.get(key, 0) + 1
+        top_stores_by_offer_count = sorted(
+            ({"store_id": k, "offer_count": v} for k, v in offer_counts.items()),
+            key=lambda x: x["offer_count"], reverse=True,
+        )[:20]
+
+        new_stores_count = 0
+        if date_from is not None or date_to is not None:
+            new_stores_count = sum(
+                1 for s in self.stores
+                if s.get("created_at") is not None
+                and (date_from is None or s["created_at"] >= date_from)
+                and (date_to is None or s["created_at"] <= date_to)
+            )
+
+        return SellerStoreAnalytics(
+            generated_at_utc=datetime.utcnow(), date_from=date_from, date_to=date_to,
+            stores_by_status=stores_by_status, sellers_without_store_count=sellers_without_store_count,
+            active_stores_without_inventory_count=active_stores_without_inventory_count,
+            top_stores_by_offer_count=top_stores_by_offer_count, new_stores_count=new_stores_count,
+        )
+
+    def get_inventory_catalog_analytics(self, date_from, date_to):
+        inventory_items_by_status: dict = {}
+        inventory_items_by_pricing_mode: dict = {}
+        stale_active_inventory_items_count = 0
+        cutoff = datetime.utcnow() - timedelta(days=30)
+        for i in self.inventory_items:
+            inventory_items_by_status[i["status"]] = inventory_items_by_status.get(i["status"], 0) + 1
+            mode = i.get("pricing_mode")
+            if mode is not None:
+                inventory_items_by_pricing_mode[mode] = inventory_items_by_pricing_mode.get(mode, 0) + 1
+            if i["status"] == "active" and i.get("updated_at") is not None and i["updated_at"] < cutoff:
+                stale_active_inventory_items_count += 1
+
+        catalog_parts_by_status: dict = {}
+        for p in self.catalog_parts:
+            catalog_parts_by_status[p["status"]] = catalog_parts_by_status.get(p["status"], 0) + 1
+
+        manufacturers_by_status: dict = {}
+        for m in self.manufacturers:
+            manufacturers_by_status[m["status"]] = manufacturers_by_status.get(m["status"], 0) + 1
+
+        return InventoryCatalogAnalytics(
+            generated_at_utc=datetime.utcnow(), date_from=date_from, date_to=date_to,
+            inventory_items_by_status=inventory_items_by_status,
+            inventory_items_by_pricing_mode=inventory_items_by_pricing_mode,
+            stale_active_inventory_items_count=stale_active_inventory_items_count,
+            catalog_parts_by_status=catalog_parts_by_status, manufacturers_by_status=manufacturers_by_status,
+            models_total=len(self.models), generations_total=len(self.generations), trims_total=len(self.trims),
+        )
+
+    def get_purchase_request_offer_analytics(self, date_from, date_to):
+        offers_by_status: dict = {}
+        for o in self.offers:
+            offers_by_status[o["status"]] = offers_by_status.get(o["status"], 0) + 1
+        withdrawn_offers_count = offers_by_status.get("withdrawn", 0)
+
+        pr_created_at = {pr["id"]: pr.get("created_at") for pr in self.purchase_requests if pr.get("created_at") is not None}
+        first_offer_at: dict = {}
+        for o in self.offers:
+            pr_id = o.get("purchase_request_id")
+            created = o.get("created_at")
+            if pr_id is None or created is None:
+                continue
+            if pr_id not in first_offer_at or created < first_offer_at[pr_id]:
+                first_offer_at[pr_id] = created
+
+        first_offer_hours = [
+            (first_offer_at[pr_id] - pr_created_at[pr_id]).total_seconds() / 3600.0
+            for pr_id in first_offer_at if pr_id in pr_created_at
+        ]
+        avg_hours_to_first_offer = (sum(first_offer_hours) / len(first_offer_hours)) if first_offer_hours else None
+
+        accepted_hours = []
+        for o in self.offers:
+            if o["status"] != "accepted":
+                continue
+            pr_id = o.get("purchase_request_id")
+            updated = o.get("updated_at")
+            if pr_id in pr_created_at and updated is not None:
+                accepted_hours.append((updated - pr_created_at[pr_id]).total_seconds() / 3600.0)
+        avg_hours_to_accepted_offer = (sum(accepted_hours) / len(accepted_hours)) if accepted_hours else None
+
+        return PurchaseRequestOfferAnalytics(
+            generated_at_utc=datetime.utcnow(), date_from=date_from, date_to=date_to,
+            offers_by_status=offers_by_status, withdrawn_offers_count=withdrawn_offers_count,
+            avg_hours_to_first_offer=avg_hours_to_first_offer,
+            avg_hours_to_accepted_offer=avg_hours_to_accepted_offer,
         )

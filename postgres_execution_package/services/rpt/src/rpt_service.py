@@ -182,6 +182,39 @@ Null handling: يتطلب date_from و/أو date_to فعليًا؛ قائمة ف
 حالية (تحقُّق مصدري مباشر) — الاختراع ممنوع صراحة. البيانات الجغرافية
 متاحة فقط على مستوى المتجر (str.stores)، تُعرَض ضمن Seller/Store Analytics.
 ===========================================================================
+
+===========================================================================
+امتداد — Consolidated Detailed Analytics (Seller/Store + Inventory/Catalog + PR/Offer)
+===========================================================================
+
+--- SellerStoreAnalytics ---
+stores_by_status: GROUP BY status FROM str.stores — Snapshot
+sellers_without_store_count: iam.users بدور بائع بلا صفّ مطابق في str.stores — Snapshot
+active_stores_without_inventory_count: متجر نشط بلا أي str.inventory_items — Snapshot
+top_stores_by_offer_count: GROUP BY seller_store_ref_id FROM pur.offers، أعلى 20 — Snapshot
+new_stores_count: يتطلب date_from/date_to فعليًا (created_at ضمن المدى، Inclusive
+                   Calendar Dates بنفس معيار _normalize_date_range)، وإلا 0
+
+--- InventoryCatalogAnalytics ---
+inventory_items_by_status / by_pricing_mode / catalog_parts_by_status /
+manufacturers_by_status / models_total / generations_total / trims_total:
+Snapshot مباشر من الجداول المعنية. لا عمود status في vct.generations/vct.trims
+(عدّ إجمالي فقط، بلا تفصيل حالة).
+stale_active_inventory_items_count: status='active' وupdated_at أقدم من 30 يومًا —
+Snapshot. لا "عناصر بلا صور": primary_photo_id عمود يتيم فعليًا (بلا بنية تحتية
+صور مخزون بعد) — أي مؤشر كهذا سيُظهِر 100% من العناصر "بلا صورة" دائمًا، مضلِّل
+تمامًا وليس إشارة سلوك بائع حقيقية؛ الاختراع ممنوع صراحة.
+
+--- PurchaseRequestOfferAnalytics ---
+offers_by_status / withdrawn_offers_count: Snapshot مباشر من pur.offers
+avg_hours_to_first_offer: متوسط الفارق (أول عرض.created_at - الطلب.created_at)
+                           بالساعات، لكل الطلبات التي استقبلت عرضًا واحدًا فأكثر
+avg_hours_to_accepted_offer: متوسط الفارق (العرض المقبول.updated_at - الطلب.created_at)
+                              بالساعات، لكل الطلبات التي قُبِل فيها عرض
+Null handling: None (لا صفر مضلِّل) إذا لا بيانات كافية لحساب المتوسط — مؤشر
+               غير موجود أفضل من مؤشر خاطئ يوحي بـ"استجابة فورية".
+Sensitivity: كل ما سبق Internal، بلا بيانات شخصية.
+===========================================================================
 """
 
 from datetime import datetime
@@ -189,9 +222,12 @@ from typing import Optional
 
 from rpt_repository import (
     ExecutiveDashboard,
+    InventoryCatalogAnalytics,
     MarketplaceIntelligence,
     MissingPartsReport,
+    PurchaseRequestOfferAnalytics,
     SearchAnalytics,
+    SellerStoreAnalytics,
     TrendingParts,
     UserAnalytics,
 )
@@ -274,3 +310,24 @@ def get_user_analytics_via_repository(
 ) -> UserAnalytics:
     date_from, date_to = _normalize_date_range(date_from, date_to)
     return repository.get_user_analytics(date_from, date_to)
+
+
+def get_seller_store_analytics_via_repository(
+    repository, date_from: Optional[datetime] = None, date_to: Optional[datetime] = None,
+) -> SellerStoreAnalytics:
+    date_from, date_to = _normalize_date_range(date_from, date_to)
+    return repository.get_seller_store_analytics(date_from, date_to)
+
+
+def get_inventory_catalog_analytics_via_repository(
+    repository, date_from: Optional[datetime] = None, date_to: Optional[datetime] = None,
+) -> InventoryCatalogAnalytics:
+    date_from, date_to = _normalize_date_range(date_from, date_to)
+    return repository.get_inventory_catalog_analytics(date_from, date_to)
+
+
+def get_purchase_request_offer_analytics_via_repository(
+    repository, date_from: Optional[datetime] = None, date_to: Optional[datetime] = None,
+) -> PurchaseRequestOfferAnalytics:
+    date_from, date_to = _normalize_date_range(date_from, date_to)
+    return repository.get_purchase_request_offer_analytics(date_from, date_to)

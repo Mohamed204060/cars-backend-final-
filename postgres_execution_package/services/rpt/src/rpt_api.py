@@ -18,9 +18,12 @@ from rpt_service import (
     InvalidDateRangeError,
     InvalidWindowError,
     get_executive_dashboard_via_repository,
+    get_inventory_catalog_analytics_via_repository,
     get_marketplace_intelligence_via_repository,
     get_missing_parts_report_via_repository,
+    get_purchase_request_offer_analytics_via_repository,
     get_search_analytics_via_repository,
+    get_seller_store_analytics_via_repository,
     get_trending_parts_via_repository,
     get_user_analytics_via_repository,
 )
@@ -116,6 +119,41 @@ class UserAnalyticsResponse(BaseModel):
     users_by_role: dict[str, int]
     users_by_account_type: dict[str, int]
     verified_sellers_count: int
+
+
+class SellerStoreAnalyticsResponse(BaseModel):
+    generated_at_utc: str
+    date_from: Optional[str] = None
+    date_to: Optional[str] = None
+    stores_by_status: dict[str, int]
+    sellers_without_store_count: int
+    active_stores_without_inventory_count: int
+    top_stores_by_offer_count: list[dict]
+    new_stores_count: int
+
+
+class InventoryCatalogAnalyticsResponse(BaseModel):
+    generated_at_utc: str
+    date_from: Optional[str] = None
+    date_to: Optional[str] = None
+    inventory_items_by_status: dict[str, int]
+    inventory_items_by_pricing_mode: dict[str, int]
+    stale_active_inventory_items_count: int
+    catalog_parts_by_status: dict[str, int]
+    manufacturers_by_status: dict[str, int]
+    models_total: int
+    generations_total: int
+    trims_total: int
+
+
+class PurchaseRequestOfferAnalyticsResponse(BaseModel):
+    generated_at_utc: str
+    date_from: Optional[str] = None
+    date_to: Optional[str] = None
+    offers_by_status: dict[str, int]
+    withdrawn_offers_count: int
+    avg_hours_to_first_offer: Optional[float] = None
+    avg_hours_to_accepted_offer: Optional[float] = None
 
 
 def _require_admin(correlation_id: str, current_session: Session, auth_repo) -> None:
@@ -289,4 +327,81 @@ def get_user_analytics(
         date_to=ua.date_to.isoformat() if ua.date_to else None,
         registrations_by_day=ua.registrations_by_day, users_by_role=ua.users_by_role,
         users_by_account_type=ua.users_by_account_type, verified_sellers_count=ua.verified_sellers_count,
+    )
+
+
+@router.get("/seller-store-analytics", response_model=SellerStoreAnalyticsResponse)
+def get_seller_store_analytics(
+    correlation_id: str = Depends(get_correlation_id),
+    current_session: Session = Depends(get_current_session),
+    rpt_repo=Depends(get_rpt_repository),
+    auth_repo=Depends(get_auth_repository_for_role_check),
+    date_from: Optional[datetime] = None,
+    date_to: Optional[datetime] = None,
+):
+    _require_admin(correlation_id, current_session, auth_repo)
+    try:
+        d = get_seller_store_analytics_via_repository(rpt_repo, date_from=date_from, date_to=date_to)
+    except InvalidDateRangeError:
+        raise error(correlation_id, status.HTTP_400_BAD_REQUEST, "INVALID_DATE_RANGE", "date_from يجب ألا يكون بعد date_to.")
+
+    return SellerStoreAnalyticsResponse(
+        generated_at_utc=d.generated_at_utc.isoformat(),
+        date_from=d.date_from.isoformat() if d.date_from else None,
+        date_to=d.date_to.isoformat() if d.date_to else None,
+        stores_by_status=d.stores_by_status, sellers_without_store_count=d.sellers_without_store_count,
+        active_stores_without_inventory_count=d.active_stores_without_inventory_count,
+        top_stores_by_offer_count=d.top_stores_by_offer_count, new_stores_count=d.new_stores_count,
+    )
+
+
+@router.get("/inventory-catalog-analytics", response_model=InventoryCatalogAnalyticsResponse)
+def get_inventory_catalog_analytics(
+    correlation_id: str = Depends(get_correlation_id),
+    current_session: Session = Depends(get_current_session),
+    rpt_repo=Depends(get_rpt_repository),
+    auth_repo=Depends(get_auth_repository_for_role_check),
+    date_from: Optional[datetime] = None,
+    date_to: Optional[datetime] = None,
+):
+    _require_admin(correlation_id, current_session, auth_repo)
+    try:
+        d = get_inventory_catalog_analytics_via_repository(rpt_repo, date_from=date_from, date_to=date_to)
+    except InvalidDateRangeError:
+        raise error(correlation_id, status.HTTP_400_BAD_REQUEST, "INVALID_DATE_RANGE", "date_from يجب ألا يكون بعد date_to.")
+
+    return InventoryCatalogAnalyticsResponse(
+        generated_at_utc=d.generated_at_utc.isoformat(),
+        date_from=d.date_from.isoformat() if d.date_from else None,
+        date_to=d.date_to.isoformat() if d.date_to else None,
+        inventory_items_by_status=d.inventory_items_by_status,
+        inventory_items_by_pricing_mode=d.inventory_items_by_pricing_mode,
+        stale_active_inventory_items_count=d.stale_active_inventory_items_count,
+        catalog_parts_by_status=d.catalog_parts_by_status, manufacturers_by_status=d.manufacturers_by_status,
+        models_total=d.models_total, generations_total=d.generations_total, trims_total=d.trims_total,
+    )
+
+
+@router.get("/purchase-request-offer-analytics", response_model=PurchaseRequestOfferAnalyticsResponse)
+def get_purchase_request_offer_analytics(
+    correlation_id: str = Depends(get_correlation_id),
+    current_session: Session = Depends(get_current_session),
+    rpt_repo=Depends(get_rpt_repository),
+    auth_repo=Depends(get_auth_repository_for_role_check),
+    date_from: Optional[datetime] = None,
+    date_to: Optional[datetime] = None,
+):
+    _require_admin(correlation_id, current_session, auth_repo)
+    try:
+        d = get_purchase_request_offer_analytics_via_repository(rpt_repo, date_from=date_from, date_to=date_to)
+    except InvalidDateRangeError:
+        raise error(correlation_id, status.HTTP_400_BAD_REQUEST, "INVALID_DATE_RANGE", "date_from يجب ألا يكون بعد date_to.")
+
+    return PurchaseRequestOfferAnalyticsResponse(
+        generated_at_utc=d.generated_at_utc.isoformat(),
+        date_from=d.date_from.isoformat() if d.date_from else None,
+        date_to=d.date_to.isoformat() if d.date_to else None,
+        offers_by_status=d.offers_by_status, withdrawn_offers_count=d.withdrawn_offers_count,
+        avg_hours_to_first_offer=d.avg_hours_to_first_offer,
+        avg_hours_to_accepted_offer=d.avg_hours_to_accepted_offer,
     )
