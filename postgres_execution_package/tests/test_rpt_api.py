@@ -570,3 +570,124 @@ class TestUserAnalytics:
         body = client.get("/api/v1/reports/user-analytics").json()
         forbidden_keys = {"country", "city", "language", "country_ref_id", "city_ref_id"}
         assert forbidden_keys.isdisjoint(set(k.lower() for k in body.keys()))
+
+
+class TestSellerStoreAnalytics:
+
+    def test_requires_authentication(self, app_and_client):
+        app, client = app_and_client
+        assert client.get("/api/v1/reports/seller-store-analytics").status_code == 401
+
+    def test_forbidden_for_non_admin(self, app_and_client):
+        app, client = app_and_client
+        _login_as(app, client, "seller@example.com", role="individual_seller")
+        assert client.get("/api/v1/reports/seller-store-analytics").status_code == 403
+
+    def test_empty_dataset_no_errors(self, app_and_client):
+        app, client = app_and_client
+        _login_as(app, client, "admin@example.com", role="admin")
+        resp = client.get("/api/v1/reports/seller-store-analytics")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["stores_by_status"] == {}
+        assert body["sellers_without_store_count"] == 0
+        assert body["top_stores_by_offer_count"] == []
+
+    def test_seller_without_store_and_stale_active_store_detected(self, app_and_client):
+        app, client = app_and_client
+        repo = app.state.rpt_repository
+        repo.users = [{"id": "u1", "primary_role": "individual_seller"}, {"id": "u2", "primary_role": "individual_buyer"}]
+        repo.stores = [{"id": "s1", "status": "active"}]  # لا owner_user_ref_id مطابق لـu1
+        _login_as(app, client, "admin@example.com", role="admin")
+        body = client.get("/api/v1/reports/seller-store-analytics").json()
+        assert body["sellers_without_store_count"] == 1
+        assert body["active_stores_without_inventory_count"] == 1
+
+    def test_top_stores_ranked_by_offer_count(self, app_and_client):
+        app, client = app_and_client
+        repo = app.state.rpt_repository
+        repo.offers = [
+            {"purchase_request_id": "pr1", "status": "submitted", "seller_store_ref_id": "s1"},
+            {"purchase_request_id": "pr2", "status": "submitted", "seller_store_ref_id": "s1"},
+            {"purchase_request_id": "pr3", "status": "submitted", "seller_store_ref_id": "s2"},
+        ]
+        _login_as(app, client, "admin@example.com", role="admin")
+        body = client.get("/api/v1/reports/seller-store-analytics").json()
+        assert body["top_stores_by_offer_count"][0] == {"store_id": "s1", "offer_count": 2}
+
+
+class TestInventoryCatalogAnalytics:
+
+    def test_requires_authentication(self, app_and_client):
+        app, client = app_and_client
+        assert client.get("/api/v1/reports/inventory-catalog-analytics").status_code == 401
+
+    def test_forbidden_for_non_admin(self, app_and_client):
+        app, client = app_and_client
+        _login_as(app, client, "seller@example.com", role="individual_seller")
+        assert client.get("/api/v1/reports/inventory-catalog-analytics").status_code == 403
+
+    def test_no_image_related_field_present(self, app_and_client):
+        """قرار حاكم صريح: primary_photo_id عمود يتيم — لا مؤشر 'بلا صور' مُخترَع."""
+        app, client = app_and_client
+        _login_as(app, client, "admin@example.com", role="admin")
+        body = client.get("/api/v1/reports/inventory-catalog-analytics").json()
+        assert not any("image" in k.lower() or "photo" in k.lower() for k in body.keys())
+
+    def test_stale_active_items_detected_by_updated_at(self, app_and_client):
+        app, client = app_and_client
+        now = datetime.utcnow()
+        repo = app.state.rpt_repository
+        repo.inventory_items = [
+            {"status": "active", "pricing_mode": "fixed_price", "updated_at": now - timedelta(days=40)},
+            {"status": "active", "pricing_mode": "fixed_price", "updated_at": now - timedelta(days=1)},
+        ]
+        _login_as(app, client, "admin@example.com", role="admin")
+        body = client.get("/api/v1/reports/inventory-catalog-analytics").json()
+        assert body["stale_active_inventory_items_count"] == 1
+        assert body["inventory_items_by_pricing_mode"] == {"fixed_price": 2}
+
+    def test_empty_dataset_no_errors(self, app_and_client):
+        app, client = app_and_client
+        _login_as(app, client, "admin@example.com", role="admin")
+        resp = client.get("/api/v1/reports/inventory-catalog-analytics")
+        assert resp.status_code == 200
+        assert resp.json()["models_total"] == 0
+
+
+class TestPurchaseRequestOfferAnalytics:
+
+    def test_requires_authentication(self, app_and_client):
+        app, client = app_and_client
+        assert client.get("/api/v1/reports/purchase-request-offer-analytics").status_code == 401
+
+    def test_forbidden_for_non_admin(self, app_and_client):
+        app, client = app_and_client
+        _login_as(app, client, "seller@example.com", role="individual_seller")
+        assert client.get("/api/v1/reports/purchase-request-offer-analytics").status_code == 403
+
+    def test_empty_dataset_returns_null_averages_not_zero(self, app_and_client):
+        """Null handling: None (لا صفر مضلِّل) بلا بيانات كافية."""
+        app, client = app_and_client
+        _login_as(app, client, "admin@example.com", role="admin")
+        body = client.get("/api/v1/reports/purchase-request-offer-analytics").json()
+        assert body["avg_hours_to_first_offer"] is None
+        assert body["avg_hours_to_accepted_offer"] is None
+        assert body["withdrawn_offers_count"] == 0
+
+    def test_avg_hours_to_first_and_accepted_offer_computed_correctly(self, app_and_client):
+        app, client = app_and_client
+        now = datetime.utcnow()
+        repo = app.state.rpt_repository
+        repo.purchase_requests = [{"id": "pr1", "status": "fulfilled", "created_at": now - timedelta(hours=10)}]
+        repo.offers = [
+            {"purchase_request_id": "pr1", "status": "accepted", "seller_store_ref_id": "s1",
+             "created_at": now - timedelta(hours=8), "updated_at": now - timedelta(hours=2)},
+            {"purchase_request_id": "pr1", "status": "withdrawn", "seller_store_ref_id": "s2",
+             "created_at": now - timedelta(hours=9), "updated_at": now},
+        ]
+        _login_as(app, client, "admin@example.com", role="admin")
+        body = client.get("/api/v1/reports/purchase-request-offer-analytics").json()
+        assert body["withdrawn_offers_count"] == 1
+        assert abs(body["avg_hours_to_first_offer"] - 1.0) < 0.01  # أول عرض عند الساعة 9 من أصل الطلب في الساعة 10
+        assert abs(body["avg_hours_to_accepted_offer"] - 8.0) < 0.01  # العرض المقبول تحدَّث عند الساعة 2 من أصل الطلب في الساعة 10

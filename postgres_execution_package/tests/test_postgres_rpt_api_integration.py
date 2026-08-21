@@ -570,3 +570,86 @@ class TestUserAnalyticsOnLivePostgres:
         })
         assert resp.status_code == 400
         assert resp.json()["detail"]["error_code"] == "INVALID_DATE_RANGE"
+
+
+class TestSellerStoreAnalyticsOnLivePostgres:
+
+    def test_query_executes_and_seller_without_store_detected(self, app_and_client):
+        """يتحقق أن NOT EXISTS عبر iam/str يُنفَّذ بلا خطأ نحوي، وأن بائعًا
+        جديدًا بلا متجر يُحتسَب فعليًا."""
+        app, client, conn = app_and_client
+        _register_and_login(client, conn, f"admin-before{uuid.uuid4().hex[:6]}@example.com", role="admin")
+        before = client.get("/api/v1/reports/seller-store-analytics").json()
+        client.post("/api/v1/auth/logout")
+
+        _register_and_login(client, conn, f"seller{uuid.uuid4().hex[:6]}@example.com", role="individual_seller")
+        client.post("/api/v1/auth/logout")
+
+        _register_and_login(client, conn, f"admin-after{uuid.uuid4().hex[:6]}@example.com", role="admin")
+        after = client.get("/api/v1/reports/seller-store-analytics")
+        assert after.status_code == 200, after.text
+        assert after.json()["sellers_without_store_count"] - before["sellers_without_store_count"] == 1
+
+    def test_forbidden_for_non_admin_on_live_postgres(self, app_and_client):
+        app, client, conn = app_and_client
+        _register_and_login(client, conn, f"buyer{uuid.uuid4().hex[:6]}@example.com", role="individual_buyer")
+        assert client.get("/api/v1/reports/seller-store-analytics").status_code == 403
+
+
+class TestInventoryCatalogAnalyticsOnLivePostgres:
+
+    def test_query_executes_across_str_pct_vct_schemas(self, app_and_client):
+        """يتحقق أن كل الاستعلامات (str.inventory_items/pct.catalog_parts/
+        vct.manufacturers|models|generations|trims) تُنفَّذ بلا خطأ نحوي."""
+        app, client, conn = app_and_client
+        _register_and_login(client, conn, f"admin{uuid.uuid4().hex[:6]}@example.com", role="admin")
+        resp = client.get("/api/v1/reports/inventory-catalog-analytics")
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert isinstance(body["models_total"], int)
+        assert isinstance(body["stale_active_inventory_items_count"], int)
+
+    def test_forbidden_for_non_admin_on_live_postgres(self, app_and_client):
+        app, client, conn = app_and_client
+        _register_and_login(client, conn, f"buyer{uuid.uuid4().hex[:6]}@example.com", role="individual_buyer")
+        assert client.get("/api/v1/reports/inventory-catalog-analytics").status_code == 403
+
+
+class TestPurchaseRequestOfferAnalyticsOnLivePostgres:
+
+    def test_query_executes_with_empty_data(self, app_and_client):
+        """يتحقق أن EXTRACT(EPOCH FROM ...) وJOIN الفرعي (MIN(created_at))
+        يُنفَّذان بلا خطأ نحوي، وأن null يُعاد بلا بيانات (لا صفر مضلِّل)."""
+        app, client, conn = app_and_client
+        _register_and_login(client, conn, f"admin{uuid.uuid4().hex[:6]}@example.com", role="admin")
+        resp = client.get("/api/v1/reports/purchase-request-offer-analytics")
+        assert resp.status_code == 200, resp.text
+        assert isinstance(resp.json()["offers_by_status"], dict)
+
+    def test_avg_hours_to_first_offer_reflects_real_data_on_live_postgres(self, app_and_client):
+        app, client, conn = app_and_client
+        part_id = _make_approved_part(client, conn)
+        trim_id = _make_valid_trim(client, conn)
+
+        _register_and_login(client, conn, f"buyer{uuid.uuid4().hex[:6]}@example.com")
+        pr_resp = client.post("/api/v1/purchase-requests", json={"catalog_part_ref_id": part_id, "trim_ref_id": trim_id})
+        assert pr_resp.status_code == 201, pr_resp.text
+        client.post("/api/v1/auth/logout")
+
+        _register_and_login(client, conn, f"seller{uuid.uuid4().hex[:6]}@example.com", role="individual_seller")
+        assert client.post("/api/v1/store/stores", json={}).status_code == 201
+        offer_resp = client.post(f"/api/v1/purchase-requests/{pr_resp.json()['id']}/offers",
+                                  json={"amount": 100.0, "currency": "SAR", "provides_shipping": False})
+        assert offer_resp.status_code == 201, offer_resp.text
+        client.post("/api/v1/auth/logout")
+
+        _register_and_login(client, conn, f"admin{uuid.uuid4().hex[:6]}@example.com", role="admin")
+        resp = client.get("/api/v1/reports/purchase-request-offer-analytics")
+        assert resp.status_code == 200
+        assert resp.json()["avg_hours_to_first_offer"] is not None
+        assert resp.json()["avg_hours_to_first_offer"] >= 0.0
+
+    def test_forbidden_for_non_admin_on_live_postgres(self, app_and_client):
+        app, client, conn = app_and_client
+        _register_and_login(client, conn, f"buyer{uuid.uuid4().hex[:6]}@example.com", role="individual_buyer")
+        assert client.get("/api/v1/reports/purchase-request-offer-analytics").status_code == 403
