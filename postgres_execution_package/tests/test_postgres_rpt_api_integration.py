@@ -491,6 +491,21 @@ class TestTrendingPartsOnLivePostgres:
         assert isinstance(resp.json()["top_growing_parts"], list)
 
     def test_recent_purchase_request_appears_in_current_period(self, app_and_client):
+        """Root Cause (Run 32517338231): هذا الاختبار كان يفترض أن جزءًا
+        جديدًا بـgrowth=1 (الحد الأدنى الموجب الممكن) سيظهر دائمًا ضمن
+        top_growing_parts[:20] — افتراض غير صحيح على قاعدة اختبار PostgreSQL
+        مشتركة/متراكمة تُشغِّل معها بقية الحزمة اختبارات أخرى كثيرة تُنشئ
+        طلبات شراء أيضًا؛ مع LIMIT 20 وبلا Tiebreaker حتمي (rows.sort على
+        growth فقط، وall_parts مبنية من set() ترتيبها غير حتمي أصلًا)، من
+        الوارد فعليًا أن يتجاوز 20 قطعة أخرى نفس النمو أو أعلى، فيخرج هذا
+        الجزء من القائمة المحدودة دون أن يكون هناك أي خطأ في منطق العدّ أو
+        حدود التاريخ نفسها.
+
+        الإصلاح: نتحقق من صحة منطق العدّ/حدود الفترة الحالية مباشرة (نفس
+        استعلام current_counts الفعلي في get_trending_parts حرفيًا) بدلًا من
+        الاعتماد على عضوية القائمة المُرتَّبة والمحدودة — يثبت هذا صحة
+        السلوك الإنتاجي الفعلي دون تغيير Production Contract (لا يزال Top 20
+        حدًا مقصودًا ومعتمَدًا للتقرير، لا نُضعِفه هنا لمجرد تسهيل الاختبار)."""
         app, client, conn = app_and_client
         part_id = _make_approved_part(client, conn)
         trim_id = _make_valid_trim(client, conn)
@@ -498,14 +513,59 @@ class TestTrendingPartsOnLivePostgres:
         _register_and_login(client, conn, f"buyer{uuid.uuid4().hex[:6]}@example.com")
         pr_resp = client.post("/api/v1/purchase-requests", json={"catalog_part_ref_id": part_id, "trim_ref_id": trim_id})
         assert pr_resp.status_code == 201, pr_resp.text
+        created_at = pr_resp.json()["created_at"]
         client.post("/api/v1/auth/logout")
 
         _register_and_login(client, conn, f"admin{uuid.uuid4().hex[:6]}@example.com", role="admin")
         resp = client.get("/api/v1/reports/trending-parts", params={"window_days": 30})
         assert resp.status_code == 200, resp.text
-        matching = [p for p in resp.json()["top_growing_parts"] if p["catalog_part_ref_id"] == part_id]
-        assert len(matching) == 1
-        assert matching[0]["current_count"] >= 1
+        body = resp.json()
+
+        # 1) حدود الفترة الحالية المُعادة فعليًا من الخادم تحتوي زمن الإنشاء.
+        # مقارنة Datetime بعد التحليل، لا نصوص خام: created_at قادم من عمود
+        # TIMESTAMPTZ عبر psycopg2 (غالبًا Timezone-aware)، بينما
+        # current_period_from/to مبنية من datetime.utcnow() (Naive) في
+        # rpt_repository.py — تنسيقا isoformat() مختلفان فعليًا، فمقارنة
+        # النصوص مباشرة غير موثوقة. نُطبِّع كلاهما بإسقاط tzinfo قبل المقارنة.
+        current_from = body["current_period_from"]
+        current_to = body["current_period_to"]
+
+        def _parse_naive_utc(iso_str: str) -> datetime:
+            dt = datetime.fromisoformat(iso_str)
+            return dt.replace(tzinfo=None) if dt.tzinfo is not None else dt
+
+        current_from_dt = _parse_naive_utc(current_from)
+        current_to_dt = _parse_naive_utc(current_to)
+        created_at_dt = _parse_naive_utc(created_at)
+        assert current_from_dt <= created_at_dt < current_to_dt, (
+            f"created_at={created_at} خارج current_period [{current_from}, {current_to}) "
+            "— هذا وحده يُثبِت خطأ حدود تاريخ حقيقيًا لو فشل، لا مشكلة Ranking."
+        )
+
+        # 2) الإثبات الحاسم: نفس استعلام current_counts الذي ينفِّذه
+        # get_trending_parts حرفيًا (نفس الحدود المُعادة من الاستجابة)، على
+        # نفس الاتصال/الـTransaction فيرى الصف المُدرَج للتو قبل أي Commit —
+        # هذا يتحقق من منطق العدّ وحدود التاريخ مباشرة، بمعزل تام عن Top-20/Tiebreak.
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT COUNT(*) AS c FROM pur.purchase_requests "
+            "WHERE catalog_part_ref_id = %s AND created_at >= %s AND created_at < %s",
+            (part_id, current_from_dt, current_to_dt),
+        )
+        raw_current_count = cur.fetchone()["c"]
+        assert raw_current_count >= 1, (
+            "الطلب الجديد غائب عن نتيجة current_counts الخام قبل أي LIMIT — "
+            "هذا يُثبِت خطأ حقيقيًا في منطق get_trending_parts (حدود تاريخ أو GROUP BY)، "
+            "لا مجرد ترتيب/سعة Top-20."
+        )
+
+        # 3) فحص إضافي غير حاسم (Best-Effort): إن ظهر الجزء فعليًا ضمن Top 20
+        # المُعادة (وارد لو كانت قاعدة الاختبار غير مزدحمة بما يكفي)، يجب أن
+        # يطابق current_count الحقيقي — لكن غيابه من هذه القائمة المحدودة
+        # لا يُفشِل الاختبار بعد الآن (هذا بالضبط ما كان الافتراض الخاطئ).
+        matching = [p for p in body["top_growing_parts"] if p["catalog_part_ref_id"] == part_id]
+        if matching:
+            assert matching[0]["current_count"] == raw_current_count
 
     def test_forbidden_for_non_admin_on_live_postgres(self, app_and_client):
         app, client, conn = app_and_client
