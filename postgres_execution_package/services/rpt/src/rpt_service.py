@@ -226,6 +226,7 @@ from rpt_repository import (
     InventoryCatalogAnalytics,
     MarketplaceIntelligence,
     Member360,
+    Member360Sensitive,
     MissingPartsReport,
     PurchaseRequestOfferAnalytics,
     SearchAnalytics,
@@ -337,8 +338,15 @@ def get_purchase_request_offer_analytics_via_repository(
 
 
 def get_member_360_via_repository(repository, user_id: str) -> Optional[Member360]:
-    """None يعني: المستخدم غير موجود — 404 مسؤولية طبقة الـAPI."""
+    """None يعني: المستخدم غير موجود — 404 مسؤولية طبقة الـAPI. Admin-safe
+    فقط — لا تستدعي repository.get_member_360_sensitive إطلاقًا من هنا."""
     return repository.get_member_360(user_id)
+
+
+def get_member_360_sensitive_via_repository(repository, user_id: str) -> Optional[Member360Sensitive]:
+    """طبقة حساسة معزولة (§36-37) — تستدعي repository.get_member_360_sensitive
+    حصرًا، لا repository.get_member_360 إطلاقًا."""
+    return repository.get_member_360_sensitive(user_id)
 
 
 def get_store_360_via_repository(repository, store_id: str) -> Optional[Store360]:

@@ -201,11 +201,12 @@ class PurchaseRequestOfferAnalytics:
 
 @dataclass
 class Member360:
-    """Member 360° (Reports Catalog §6) — ملف تحليلي شامل لمستخدم واحد.
-    كل حقل هنا SSOT محدَّد صراحة أدناه؛ لا حقل مُخترَع. حقول غائبة فعليًا من
-    النموذج الحالي (IP history، Failed login attempts، Admin actions
-    المستهدِفة لهذا الحساب تحديدًا) غير مُضمَّنة هنا إطلاقًا — تُرفَع كـBlocker
-    منفصل، لا تُقارَب بقيمة تقريبية أو استدلال غير موثوق.
+    """Member 360° (Reports Catalog §6) — طبقة Admin-safe فقط (SYSTEM_ADMIN_ROLES).
+    لا استعلام هنا إطلاقًا على iam.sessions/com.conversation_participants/
+    aud.events — تلك حصرًا في Member360Sensitive أدناه + get_member_360_sensitive
+    (طبقة بيانات منفصلة تمامًا، لا Data Access مشترك حتى لو النتيجة النهائية
+    HTTP لا تُظهرها). هذا تصحيح فصل Least-Privilege فعلي على مستوى
+    Data Access نفسها، لا فلترة Response بعد جلب زائد (§36-37).
 
     SSOT لكل حقل:
     - account/status/created_at/is_verified_seller: iam.users
@@ -216,16 +217,7 @@ class Member360:
     - inventory_items_*: str.inventory_items عبر store_ids (بائع فقط)
     - purchase_requests_*: pur.purchase_requests.buyer_user_ref_id = user_id
     - offers_*: pur.offers.seller_store_ref_id IN store_ids (بائع فقط)
-    - conversations_count: عدد صفوف مميّزة في com.conversation_participants
-      لهذا المستخدم (Metadata فقط — لا محتوى رسائل، §24)
     - support_tickets_*: sup.tickets.requester_ref_id = user_id
-    - login_sessions_total/last_login_at/last_logout_at: iam.sessions
-      (created_at = وقت الدخول الفعلي؛ لا عمود IP في هذا الجدول إطلاقًا —
-      Blocker منفصل، ليس تقريبًا)
-    - audit_events_as_actor_total: aud.events.actor_ref_id = user_id فقط
-      (أفعال قام بها هذا المستخدم؛ aud.events لا يملك عمود Target/Subject،
-      فلا يمكن استعلام "إجراءات إدارية اتُّخذت على هذا الحساب" بثقة — Blocker
-      منفصل، لا استدلال من metadata/before_value/after_value غير موثَّق)
     """
     generated_at_utc: datetime
     user_id: str
@@ -251,15 +243,34 @@ class Member360:
     offers_total: int
     offers_by_status: dict
 
-    conversations_count: int
-
     support_tickets_total: int
     support_tickets_by_status: dict
 
+
+@dataclass
+class Member360Sensitive:
+    """Member 360° — طبقة حساسة فقط (super_admin حصرًا، §36-37). كل استعلام
+    هنا مقصور على iam.sessions/com.conversation_participants/aud.events —
+    لا تُستدعى هذه الدالة إطلاقًا من مسار get_member_360 العام (فصل Data
+    Access حقيقي، لا فلترة Response بعد الجلب).
+
+    SSOT لكل حقل:
+    - conversations_count: عدد صفوف مميّزة في com.conversation_participants
+      لهذا المستخدم (Metadata فقط — لا محتوى رسائل، §24)
+    - login_sessions_total/last_login_at/last_logout_at: iam.sessions
+      (created_at = وقت الدخول الفعلي؛ لا عمود IP في هذا الجدول إطلاقًا —
+      Blocker منفصل، ليس تقريبًا)
+    - audit_events_as_actor_total: aud.events.actor_ref_id = user_id فقط
+      (أفعال قام بها هذا المستخدم؛ aud.events لا يملك عمود Target/Subject،
+      فلا يمكن استعلام "إجراءات إدارية اتُّخذت على هذا الحساب" بثقة — Blocker
+      منفصل، لا استدلال من metadata/before_value/after_value غير موثَّق)
+    """
+    generated_at_utc: datetime
+    user_id: str
+    conversations_count: int
     login_sessions_total: int
     last_login_at: Optional[datetime]
     last_logout_at: Optional[datetime]
-
     audit_events_as_actor_total: int
 
 
@@ -394,7 +405,16 @@ class RptRepository(ABC):
 
     @abstractmethod
     def get_member_360(self, user_id: str) -> Optional[Member360]:
-        """None إن لم يوجد مستخدم بهذا الـid — التحقق من 404 مسؤولية cnt_api/الاستدعاء."""
+        """None إن لم يوجد مستخدم بهذا الـid — التحقق من 404 مسؤولية cnt_api/الاستدعاء.
+        Admin-safe فقط — يجب ألا يُنفِّذ أي استعلام على iam.sessions/
+        com.conversation_participants/aud.events إطلاقًا (تلك حصرًا في
+        get_member_360_sensitive أدناه)."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_member_360_sensitive(self, user_id: str) -> Optional[Member360Sensitive]:
+        """None إن لم يوجد مستخدم. طبقة حساسة معزولة تمامًا (§36-37) — لا
+        تُستدعى إطلاقًا من get_member_360 أو أي مسار SYSTEM_ADMIN_ROLES عام."""
         raise NotImplementedError
 
     @abstractmethod
@@ -832,6 +852,9 @@ class PostgresRptRepository(RptRepository):
         )
 
     def get_member_360(self, user_id):
+        """Admin-safe فقط — لا استعلام هنا إطلاقًا على iam.sessions/
+        com.conversation_participants/aud.events (تصحيح فصل Data Access،
+        راجع توثيق Member360/Member360Sensitive أعلى الملف)."""
         with self._connection.cursor() as cur:
             cur.execute(
                 "SELECT id, business_code, primary_role, account_type, status, created_at, is_verified_seller "
@@ -884,17 +907,40 @@ class PostgresRptRepository(RptRepository):
             offers_total = sum(offers_by_status.values())
 
             cur.execute(
-                "SELECT COUNT(DISTINCT conversation_id) AS c FROM com.conversation_participants WHERE user_ref_id = %(id)s",
-                {"id": user_id},
-            )
-            conversations_count = cur.fetchone()["c"]
-
-            cur.execute(
                 "SELECT status, COUNT(*) AS c FROM sup.tickets WHERE requester_ref_id = %(id)s GROUP BY status",
                 {"id": user_id},
             )
             support_tickets_by_status = {r["status"]: r["c"] for r in cur.fetchall()}
             support_tickets_total = sum(support_tickets_by_status.values())
+
+        return Member360(
+            generated_at_utc=datetime.utcnow(), user_id=user_row["id"], business_code=user_row["business_code"],
+            primary_role=user_row["primary_role"], account_type=user_row["account_type"],
+            status=user_row["status"], created_at=user_row["created_at"],
+            is_verified_seller=user_row["is_verified_seller"], store_ids=store_ids,
+            subscription_plan_code=subscription_plan_code, subscription_status=subscription_status,
+            subscription_expires_at=subscription_expires_at,
+            inventory_items_total=inventory_items_total, inventory_items_by_status=inventory_items_by_status,
+            purchase_requests_total=purchase_requests_total, purchase_requests_by_status=purchase_requests_by_status,
+            offers_total=offers_total, offers_by_status=offers_by_status,
+            support_tickets_total=support_tickets_total, support_tickets_by_status=support_tickets_by_status,
+        )
+
+    def get_member_360_sensitive(self, user_id):
+        """طبقة حساسة معزولة تمامًا (§36-37) — الاستعلام الوحيد على
+        iam.users هنا هو فحص وجود المستخدم (id فقط، لا حقل آخر)، ثم كل
+        الاستعلامات الباقية مقصورة على iam.sessions/
+        com.conversation_participants/aud.events حصرًا."""
+        with self._connection.cursor() as cur:
+            cur.execute("SELECT id FROM iam.users WHERE id = %(id)s", {"id": user_id})
+            if cur.fetchone() is None:
+                return None
+
+            cur.execute(
+                "SELECT COUNT(DISTINCT conversation_id) AS c FROM com.conversation_participants WHERE user_ref_id = %(id)s",
+                {"id": user_id},
+            )
+            conversations_count = cur.fetchone()["c"]
 
             cur.execute(
                 "SELECT COUNT(*) AS c, MAX(created_at) AS last_login, "
@@ -910,18 +956,9 @@ class PostgresRptRepository(RptRepository):
             cur.execute("SELECT COUNT(*) AS c FROM aud.events WHERE actor_ref_id = %(id)s", {"id": user_id})
             audit_events_as_actor_total = cur.fetchone()["c"]
 
-        return Member360(
-            generated_at_utc=datetime.utcnow(), user_id=user_row["id"], business_code=user_row["business_code"],
-            primary_role=user_row["primary_role"], account_type=user_row["account_type"],
-            status=user_row["status"], created_at=user_row["created_at"],
-            is_verified_seller=user_row["is_verified_seller"], store_ids=store_ids,
-            subscription_plan_code=subscription_plan_code, subscription_status=subscription_status,
-            subscription_expires_at=subscription_expires_at,
-            inventory_items_total=inventory_items_total, inventory_items_by_status=inventory_items_by_status,
-            purchase_requests_total=purchase_requests_total, purchase_requests_by_status=purchase_requests_by_status,
-            offers_total=offers_total, offers_by_status=offers_by_status,
+        return Member360Sensitive(
+            generated_at_utc=datetime.utcnow(), user_id=user_id,
             conversations_count=conversations_count,
-            support_tickets_total=support_tickets_total, support_tickets_by_status=support_tickets_by_status,
             login_sessions_total=login_sessions_total, last_login_at=last_login_at, last_logout_at=last_logout_at,
             audit_events_as_actor_total=audit_events_as_actor_total,
         )
@@ -1425,6 +1462,8 @@ class InMemoryRptRepository(RptRepository):
         )
 
     def get_member_360(self, user_id):
+        """Admin-safe فقط — لا وصول هنا إطلاقًا إلى self.conversation_participants/
+        self.sessions/self.audit_events (تصحيح فصل Data Access)."""
         user_row = next((u for u in self.users if u.get("id") == user_id), None)
         if user_row is None:
             return None
@@ -1448,21 +1487,10 @@ class InMemoryRptRepository(RptRepository):
             if o.get("seller_store_ref_id") in store_ids:
                 offers_by_status[o["status"]] = offers_by_status.get(o["status"], 0) + 1
 
-        conversations_count = len({
-            p["conversation_id"] for p in self.conversation_participants if p.get("user_ref_id") == user_id
-        })
-
         support_tickets_by_status: dict = {}
         for t in self.support_tickets:
             if t.get("requester_ref_id") == user_id:
                 support_tickets_by_status[t["status"]] = support_tickets_by_status.get(t["status"], 0) + 1
-
-        user_sessions = [s for s in self.sessions if s.get("user_id") == user_id]
-        last_login_at = max((s["created_at"] for s in user_sessions), default=None)
-        logout_times = [s["revoked_at"] for s in user_sessions if s.get("revoked_reason") == "logout"]
-        last_logout_at = max(logout_times, default=None)
-
-        audit_events_as_actor_total = sum(1 for e in self.audit_events if e.get("actor_ref_id") == user_id)
 
         return Member360(
             generated_at_utc=datetime.utcnow(), user_id=user_row["id"],
@@ -1478,9 +1506,32 @@ class InMemoryRptRepository(RptRepository):
             purchase_requests_total=sum(purchase_requests_by_status.values()),
             purchase_requests_by_status=purchase_requests_by_status,
             offers_total=sum(offers_by_status.values()), offers_by_status=offers_by_status,
-            conversations_count=conversations_count,
             support_tickets_total=sum(support_tickets_by_status.values()),
             support_tickets_by_status=support_tickets_by_status,
+        )
+
+    def get_member_360_sensitive(self, user_id):
+        """طبقة حساسة معزولة تمامًا — الوصول الوحيد لـself.users هنا هو
+        فحص وجود المستخدم؛ كل شيء آخر مقصور على self.conversation_participants/
+        self.sessions/self.audit_events حصرًا."""
+        user_exists = any(u.get("id") == user_id for u in self.users)
+        if not user_exists:
+            return None
+
+        conversations_count = len({
+            p["conversation_id"] for p in self.conversation_participants if p.get("user_ref_id") == user_id
+        })
+
+        user_sessions = [s for s in self.sessions if s.get("user_id") == user_id]
+        last_login_at = max((s["created_at"] for s in user_sessions), default=None)
+        logout_times = [s["revoked_at"] for s in user_sessions if s.get("revoked_reason") == "logout"]
+        last_logout_at = max(logout_times, default=None)
+
+        audit_events_as_actor_total = sum(1 for e in self.audit_events if e.get("actor_ref_id") == user_id)
+
+        return Member360Sensitive(
+            generated_at_utc=datetime.utcnow(), user_id=user_id,
+            conversations_count=conversations_count,
             login_sessions_total=len(user_sessions), last_login_at=last_login_at, last_logout_at=last_logout_at,
             audit_events_as_actor_total=audit_events_as_actor_total,
         )
