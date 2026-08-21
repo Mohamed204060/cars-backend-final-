@@ -221,13 +221,16 @@ from datetime import datetime
 from typing import Optional
 
 from rpt_repository import (
+    DataQualityDashboard,
     ExecutiveDashboard,
     InventoryCatalogAnalytics,
     MarketplaceIntelligence,
+    Member360,
     MissingPartsReport,
     PurchaseRequestOfferAnalytics,
     SearchAnalytics,
     SellerStoreAnalytics,
+    Store360,
     TrendingParts,
     UserAnalytics,
 )
@@ -331,3 +334,17 @@ def get_purchase_request_offer_analytics_via_repository(
 ) -> PurchaseRequestOfferAnalytics:
     date_from, date_to = _normalize_date_range(date_from, date_to)
     return repository.get_purchase_request_offer_analytics(date_from, date_to)
+
+
+def get_member_360_via_repository(repository, user_id: str) -> Optional[Member360]:
+    """None يعني: المستخدم غير موجود — 404 مسؤولية طبقة الـAPI."""
+    return repository.get_member_360(user_id)
+
+
+def get_store_360_via_repository(repository, store_id: str) -> Optional[Store360]:
+    """None يعني: المتجر غير موجود — 404 مسؤولية طبقة الـAPI."""
+    return repository.get_store_360(store_id)
+
+
+def get_data_quality_dashboard_via_repository(repository) -> DataQualityDashboard:
+    return repository.get_data_quality_dashboard()

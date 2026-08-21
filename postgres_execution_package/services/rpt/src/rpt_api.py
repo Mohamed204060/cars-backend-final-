@@ -1,8 +1,22 @@
 """
-rpt_api.py — طبقة REST API لتقارير الإدارة (Batch 3A Slice 2)
+rpt_api.py — طبقة REST API لتقارير الإدارة (Batch 3A Slice 2 + Member/Store 360°
++ Data Quality — Corrective Batch)
 
-GET /reports/executive-dashboard: للإداري (SYSTEM_ADMIN_ROLES) حصرًا — نفس
-نمط aud_api.py/ana_api.py حرفيًا. لا Endpoint للكتابة إطلاقًا (Read-Only Domain).
+GET /reports/executive-dashboard وأغلب المسارات: للإداري (SYSTEM_ADMIN_ROLES)
+حصرًا — نفس نمط aud_api.py/ana_api.py حرفيًا. لا Endpoint للكتابة إطلاقًا
+(Read-Only Domain).
+
+Member 360°/Store 360° — فصل صريح بين طبقتين (Reports Catalog §36-37: امتلاك
+صلاحية Dashboard العامة لا يساوي صلاحية بيانات حساسة):
+  - GET /member-360/{id}: SYSTEM_ADMIN_ROLES (admin+super_admin) — حساب،
+    متجر، اشتراك، مخزون، طلبات/عروض، تذاكر دعم. Aggregate/Admin-safe.
+  - GET /member-360/{id}/sensitive: super_admin حصرًا — جلسات الدخول،
+    عدد المحادثات (Metadata فقط، لا محتوى أبدًا)، عدد أحداث Audit كـFaعل.
+لا صلاحية "Sensitive Report" مخصَّصة موجودة في الـ9 قيم الحالية لـ
+primary_role (IAM الحالي) — تقييد super_admin هو أقل حل متوافق دون اختراع
+Role/Permission جديد، موثَّق هنا صراحة كقرار حوكمة، لا افتراضًا صامتًا.
+Store 360° بلا حقول حساسة مكافئة أصلًا (لا جلسات/رسائل مباشرة للمتجر
+نفسه) — Endpoint واحد فقط، SYSTEM_ADMIN_ROLES.
 """
 
 from datetime import datetime
@@ -17,16 +31,28 @@ from session_service import Session
 from rpt_service import (
     InvalidDateRangeError,
     InvalidWindowError,
+    get_data_quality_dashboard_via_repository,
     get_executive_dashboard_via_repository,
     get_inventory_catalog_analytics_via_repository,
     get_marketplace_intelligence_via_repository,
+    get_member_360_sensitive_via_repository,
+    get_member_360_via_repository,
     get_missing_parts_report_via_repository,
     get_purchase_request_offer_analytics_via_repository,
     get_search_analytics_via_repository,
     get_seller_store_analytics_via_repository,
+    get_store_360_via_repository,
     get_trending_parts_via_repository,
     get_user_analytics_via_repository,
 )
+
+# IAM الحالي (001_iam.sql) لا يملك صلاحية "Sensitive Report" مخصَّصة ضمن
+# primary_role التسعة — super_admin هو أعلى دور موجود فعليًا، فاستُخدم كأقل
+# حل متوافق مع البنية القائمة (لا اختراع Role/Permission جديد، وفق التوجيه
+# الصريح). عند اعتماد صلاحية مخصَّصة مستقبلًا (IAM Extension) تُستبدَل هذه
+# الثوابت بها دون تغيير معماري إضافي.
+SENSITIVE_REPORT_ROLES = {"super_admin"}
+
 
 router = APIRouter(prefix="/api/v1/reports", tags=["reports"])
 
@@ -160,6 +186,16 @@ def _require_admin(correlation_id: str, current_session: Session, auth_repo) -> 
     role = auth_repo.get_user_role(current_session.user_id)
     if role not in SYSTEM_ADMIN_ROLES:
         raise error(correlation_id, status.HTTP_403_FORBIDDEN, "FORBIDDEN", "هذه العملية تتطلب صلاحية مدير النظام.")
+
+
+def _require_sensitive_report_access(correlation_id: str, current_session: Session, auth_repo) -> None:
+    """§36-37: بيانات حساسة (جلسات دخول، Metadata رسائل، Audit) — super_admin
+    حصرًا، أضيق من SYSTEM_ADMIN_ROLES العامة (admin+super_admin) المستخدَمة
+    لبقية التقارير. راجع التوثيق أعلى الملف لسبب هذا القرار."""
+    role = auth_repo.get_user_role(current_session.user_id)
+    if role not in SENSITIVE_REPORT_ROLES:
+        raise error(correlation_id, status.HTTP_403_FORBIDDEN, "FORBIDDEN",
+                    "هذه البيانات حساسة وتتطلب صلاحية super_admin تحديدًا.")
 
 
 def _to_response(d) -> ExecutiveDashboardResponse:
@@ -404,4 +440,194 @@ def get_purchase_request_offer_analytics(
         offers_by_status=d.offers_by_status, withdrawn_offers_count=d.withdrawn_offers_count,
         avg_hours_to_first_offer=d.avg_hours_to_first_offer,
         avg_hours_to_accepted_offer=d.avg_hours_to_accepted_offer,
+    )
+
+
+# ===========================================================================
+# Member 360° (Reports Catalog §6) — طبقتان صريحتان (راجع التوثيق أعلى الملف)
+# ===========================================================================
+
+class Member360Response(BaseModel):
+    generated_at_utc: str
+    user_id: str
+    business_code: str
+    primary_role: str
+    account_type: str
+    status: str
+    created_at: str
+    is_verified_seller: bool
+
+    store_ids: list[str]
+
+    subscription_plan_code: Optional[str] = None
+    subscription_status: Optional[str] = None
+    subscription_expires_at: Optional[str] = None
+
+    inventory_items_total: int
+    inventory_items_by_status: dict[str, int]
+
+    purchase_requests_total: int
+    purchase_requests_by_status: dict[str, int]
+
+    offers_total: int
+    offers_by_status: dict[str, int]
+
+    support_tickets_total: int
+    support_tickets_by_status: dict[str, int]
+
+
+class Member360SensitiveResponse(BaseModel):
+    """§36-37: super_admin حصرًا. جلسات الدخول (بلا IP — غير مسجَّل في
+    iam.sessions إطلاقًا، Blocker منفصل)، عدد محادثات (Metadata فقط، لا
+    محتوى)، عدد أحداث Audit كفاعل (actor) فقط — aud.events بلا عمود
+    Target/Subject، فلا يمكن عرض "إجراءات اتُّخذت على الحساب" بثقة هنا."""
+    generated_at_utc: str
+    user_id: str
+    login_sessions_total: int
+    last_login_at: Optional[str] = None
+    last_logout_at: Optional[str] = None
+    conversations_count: int
+    audit_events_as_actor_total: int
+
+
+def _to_member_360_response(m) -> Member360Response:
+    return Member360Response(
+        generated_at_utc=m.generated_at_utc.isoformat(), user_id=m.user_id, business_code=m.business_code,
+        primary_role=m.primary_role, account_type=m.account_type, status=m.status,
+        created_at=m.created_at.isoformat(), is_verified_seller=m.is_verified_seller, store_ids=m.store_ids,
+        subscription_plan_code=m.subscription_plan_code, subscription_status=m.subscription_status,
+        subscription_expires_at=m.subscription_expires_at.isoformat() if m.subscription_expires_at else None,
+        inventory_items_total=m.inventory_items_total, inventory_items_by_status=m.inventory_items_by_status,
+        purchase_requests_total=m.purchase_requests_total,
+        purchase_requests_by_status=m.purchase_requests_by_status,
+        offers_total=m.offers_total, offers_by_status=m.offers_by_status,
+        support_tickets_total=m.support_tickets_total, support_tickets_by_status=m.support_tickets_by_status,
+    )
+
+
+@router.get("/member-360/{user_id}", response_model=Member360Response)
+def get_member_360(
+    user_id: str,
+    correlation_id: str = Depends(get_correlation_id),
+    current_session: Session = Depends(get_current_session),
+    rpt_repo=Depends(get_rpt_repository),
+    auth_repo=Depends(get_auth_repository_for_role_check),
+):
+    _require_admin(correlation_id, current_session, auth_repo)
+    m = get_member_360_via_repository(rpt_repo, user_id)
+    if m is None:
+        raise error(correlation_id, status.HTTP_404_NOT_FOUND, "USER_NOT_FOUND", "المستخدم غير موجود.")
+    return _to_member_360_response(m)
+
+
+@router.get("/member-360/{user_id}/sensitive", response_model=Member360SensitiveResponse)
+def get_member_360_sensitive(
+    user_id: str,
+    correlation_id: str = Depends(get_correlation_id),
+    current_session: Session = Depends(get_current_session),
+    rpt_repo=Depends(get_rpt_repository),
+    auth_repo=Depends(get_auth_repository_for_role_check),
+):
+    # Corrective: كان هذا Endpoint يستدعي get_member_360_via_repository
+    # (Admin-safe) خطأً — bug في التوصيل فقط، رغم أن طبقة Data Access نفسها
+    # (get_member_360_sensitive في Repository) كانت مفصولة بالفعل ولا تُستدعى
+    # هنا إطلاقًا سابقًا. الآن يُستدعى المسار الحساس المعزول فعليًا.
+    _require_sensitive_report_access(correlation_id, current_session, auth_repo)
+    m = get_member_360_sensitive_via_repository(rpt_repo, user_id)
+    if m is None:
+        raise error(correlation_id, status.HTTP_404_NOT_FOUND, "USER_NOT_FOUND", "المستخدم غير موجود.")
+    return Member360SensitiveResponse(
+        generated_at_utc=m.generated_at_utc.isoformat(), user_id=m.user_id,
+        login_sessions_total=m.login_sessions_total,
+        last_login_at=m.last_login_at.isoformat() if m.last_login_at else None,
+        last_logout_at=m.last_logout_at.isoformat() if m.last_logout_at else None,
+        conversations_count=m.conversations_count, audit_events_as_actor_total=m.audit_events_as_actor_total,
+    )
+
+
+# ===========================================================================
+# Store 360° (Reports Catalog §8) — Endpoint واحد؛ بلا حقول حساسة مكافئة
+# (لا جلسات/رسائل مباشرة للمتجر نفسه) — SYSTEM_ADMIN_ROLES فقط.
+# ===========================================================================
+
+class Store360Response(BaseModel):
+    generated_at_utc: str
+    store_id: str
+    owner_user_ref_id: str
+    status: str
+    created_at: str
+
+    subscription_plan_code: Optional[str] = None
+    subscription_status: Optional[str] = None
+    subscription_expires_at: Optional[str] = None
+
+    inventory_items_total: int
+    inventory_items_by_status: dict[str, int]
+
+    offers_total: int
+    offers_by_status: dict[str, int]
+    accepted_offers_total: int
+    accepted_offer_rate: float
+
+    avg_hours_to_offer_response: Optional[float] = None
+
+    media_active_images_total: int
+
+
+@router.get("/store-360/{store_id}", response_model=Store360Response)
+def get_store_360(
+    store_id: str,
+    correlation_id: str = Depends(get_correlation_id),
+    current_session: Session = Depends(get_current_session),
+    rpt_repo=Depends(get_rpt_repository),
+    auth_repo=Depends(get_auth_repository_for_role_check),
+):
+    _require_admin(correlation_id, current_session, auth_repo)
+    s = get_store_360_via_repository(rpt_repo, store_id)
+    if s is None:
+        raise error(correlation_id, status.HTTP_404_NOT_FOUND, "STORE_NOT_FOUND", "المتجر غير موجود.")
+    return Store360Response(
+        generated_at_utc=s.generated_at_utc.isoformat(), store_id=s.store_id,
+        owner_user_ref_id=s.owner_user_ref_id, status=s.status, created_at=s.created_at.isoformat(),
+        subscription_plan_code=s.subscription_plan_code, subscription_status=s.subscription_status,
+        subscription_expires_at=s.subscription_expires_at.isoformat() if s.subscription_expires_at else None,
+        inventory_items_total=s.inventory_items_total, inventory_items_by_status=s.inventory_items_by_status,
+        offers_total=s.offers_total, offers_by_status=s.offers_by_status,
+        accepted_offers_total=s.accepted_offers_total, accepted_offer_rate=s.accepted_offer_rate,
+        avg_hours_to_offer_response=s.avg_hours_to_offer_response,
+        media_active_images_total=s.media_active_images_total,
+    )
+
+
+# ===========================================================================
+# Data Quality Dashboard (Reports Catalog §25) — بلا حقول حساسة، SYSTEM_ADMIN_ROLES.
+# ===========================================================================
+
+class DataQualityDashboardResponse(BaseModel):
+    generated_at_utc: str
+    inventory_items_without_price: int
+    inventory_items_without_images: int
+    inventory_items_total: int
+    catalog_parts_proposed_pending_review: int
+    catalog_parts_not_linked_to_vehicle: int
+    catalog_parts_total: int
+
+
+@router.get("/data-quality", response_model=DataQualityDashboardResponse)
+def get_data_quality_dashboard(
+    correlation_id: str = Depends(get_correlation_id),
+    current_session: Session = Depends(get_current_session),
+    rpt_repo=Depends(get_rpt_repository),
+    auth_repo=Depends(get_auth_repository_for_role_check),
+):
+    _require_admin(correlation_id, current_session, auth_repo)
+    d = get_data_quality_dashboard_via_repository(rpt_repo)
+    return DataQualityDashboardResponse(
+        generated_at_utc=d.generated_at_utc.isoformat(),
+        inventory_items_without_price=d.inventory_items_without_price,
+        inventory_items_without_images=d.inventory_items_without_images,
+        inventory_items_total=d.inventory_items_total,
+        catalog_parts_proposed_pending_review=d.catalog_parts_proposed_pending_review,
+        catalog_parts_not_linked_to_vehicle=d.catalog_parts_not_linked_to_vehicle,
+        catalog_parts_total=d.catalog_parts_total,
     )
