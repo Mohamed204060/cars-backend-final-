@@ -775,6 +775,76 @@ components:
         author_ref_id: { type: string, format: uuid }
         body: { type: string }
 
+    Member360Response:
+      type: object
+      description: "Reports Catalog §6 — طبقة Aggregate/Admin-safe (SYSTEM_ADMIN_ROLES). لا بيانات حساسة هنا."
+      properties:
+        generated_at_utc: { type: string, format: date-time }
+        user_id: { type: string, format: uuid }
+        business_code: { type: string }
+        primary_role: { type: string }
+        account_type: { type: string }
+        status: { type: string }
+        created_at: { type: string, format: date-time }
+        is_verified_seller: { type: boolean }
+        store_ids: { type: array, items: { type: string, format: uuid } }
+        subscription_plan_code: { type: string, nullable: true }
+        subscription_status: { type: string, nullable: true }
+        subscription_expires_at: { type: string, format: date-time, nullable: true }
+        inventory_items_total: { type: integer }
+        inventory_items_by_status: { type: object, additionalProperties: { type: integer } }
+        purchase_requests_total: { type: integer }
+        purchase_requests_by_status: { type: object, additionalProperties: { type: integer } }
+        offers_total: { type: integer }
+        offers_by_status: { type: object, additionalProperties: { type: integer } }
+        support_tickets_total: { type: integer }
+        support_tickets_by_status: { type: object, additionalProperties: { type: integer } }
+
+    Member360SensitiveResponse:
+      type: object
+      description: "Reports Catalog §6/§36-37 — طبقة حساسة (super_admin حصرًا). لا محتوى رسائل إطلاقًا، Metadata فقط."
+      properties:
+        generated_at_utc: { type: string, format: date-time }
+        user_id: { type: string, format: uuid }
+        login_sessions_total: { type: integer }
+        last_login_at: { type: string, format: date-time, nullable: true }
+        last_logout_at: { type: string, format: date-time, nullable: true }
+        conversations_count: { type: integer, description: "عدد محادثات Metadata فقط — لا محتوى" }
+        audit_events_as_actor_total: { type: integer, description: "أحداث قام بها هذا المستخدم فاعلًا (actor_ref_id) فقط؛ aud.events بلا عمود Target" }
+
+    Store360Response:
+      type: object
+      description: "Reports Catalog §8 — SYSTEM_ADMIN_ROLES. بلا طبقة حساسة منفصلة (لا حقول مكافئة)."
+      properties:
+        generated_at_utc: { type: string, format: date-time }
+        store_id: { type: string, format: uuid }
+        owner_user_ref_id: { type: string, format: uuid }
+        status: { type: string }
+        created_at: { type: string, format: date-time }
+        subscription_plan_code: { type: string, nullable: true }
+        subscription_status: { type: string, nullable: true }
+        subscription_expires_at: { type: string, format: date-time, nullable: true }
+        inventory_items_total: { type: integer }
+        inventory_items_by_status: { type: object, additionalProperties: { type: integer } }
+        offers_total: { type: integer }
+        offers_by_status: { type: object, additionalProperties: { type: integer } }
+        accepted_offers_total: { type: integer }
+        accepted_offer_rate: { type: number, format: float }
+        avg_hours_to_offer_response: { type: number, format: float, nullable: true }
+        media_active_images_total: { type: integer }
+
+    DataQualityDashboardResponse:
+      type: object
+      description: "Reports Catalog §25 — SYSTEM_ADMIN_ROLES. Price Upon Contact مستثنى عمدًا من without_price (حالة صحيحة معتمدة)."
+      properties:
+        generated_at_utc: { type: string, format: date-time }
+        inventory_items_without_price: { type: integer }
+        inventory_items_without_images: { type: integer }
+        inventory_items_total: { type: integer }
+        catalog_parts_proposed_pending_review: { type: integer }
+        catalog_parts_not_linked_to_vehicle: { type: integer }
+        catalog_parts_total: { type: integer }
+
 paths:
   /api/v1/subscriptions/plans:
     post:
@@ -2337,3 +2407,57 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/reports/member-360/{userId}:
+    get:
+      operationId: getMember360
+      summary: "Member 360° — طبقة Aggregate/Admin-safe (Reports Catalog §6)"
+      x-traceability: { requirements: [], decisions: [] }
+      security: [{ sessionAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/CorrelationIdHeader' }
+        - { name: userId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: بيانات العضو المجمَّعة, content: { application/json: { schema: { $ref: '#/components/schemas/Member360Response' } } } }
+        '403': { description: ليس مدير نظام, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '404': { description: المستخدم غير موجود, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+
+  /api/v1/reports/member-360/{userId}/sensitive:
+    get:
+      operationId: getMember360Sensitive
+      summary: "Member 360° — طبقة حساسة، super_admin حصرًا (Reports Catalog §6/§36-37)"
+      x-traceability: { requirements: [], decisions: [] }
+      security: [{ sessionAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/CorrelationIdHeader' }
+        - { name: userId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: بيانات حساسة (جلسات/Metadata محادثات/Audit), content: { application/json: { schema: { $ref: '#/components/schemas/Member360SensitiveResponse' } } } }
+        '403': { description: يتطلب super_admin تحديدًا, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '404': { description: المستخدم غير موجود, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+
+  /api/v1/reports/store-360/{storeId}:
+    get:
+      operationId: getStore360
+      summary: "Store 360° (Reports Catalog §8)"
+      x-traceability: { requirements: [], decisions: [] }
+      security: [{ sessionAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/CorrelationIdHeader' }
+        - { name: storeId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: بيانات المتجر المجمَّعة, content: { application/json: { schema: { $ref: '#/components/schemas/Store360Response' } } } }
+        '403': { description: ليس مدير نظام, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '404': { description: المتجر غير موجود, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+
+  /api/v1/reports/data-quality:
+    get:
+      operationId: getDataQualityDashboard
+      summary: "Data Quality Dashboard (Reports Catalog §25)"
+      x-traceability: { requirements: [], decisions: [] }
+      security: [{ sessionAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/CorrelationIdHeader' }
+      responses:
+        '200': { description: مؤشرات جودة البيانات, content: { application/json: { schema: { $ref: '#/components/schemas/DataQualityDashboardResponse' } } } }
+        '403': { description: ليس مدير نظام, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
