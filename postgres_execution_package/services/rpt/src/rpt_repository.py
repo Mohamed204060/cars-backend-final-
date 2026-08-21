@@ -199,6 +199,143 @@ class PurchaseRequestOfferAnalytics:
     avg_hours_to_accepted_offer: Optional[float]   # Snapshot — None إن لا بيانات
 
 
+@dataclass
+class Member360:
+    """Member 360° (Reports Catalog §6) — ملف تحليلي شامل لمستخدم واحد.
+    كل حقل هنا SSOT محدَّد صراحة أدناه؛ لا حقل مُخترَع. حقول غائبة فعليًا من
+    النموذج الحالي (IP history، Failed login attempts، Admin actions
+    المستهدِفة لهذا الحساب تحديدًا) غير مُضمَّنة هنا إطلاقًا — تُرفَع كـBlocker
+    منفصل، لا تُقارَب بقيمة تقريبية أو استدلال غير موثوق.
+
+    SSOT لكل حقل:
+    - account/status/created_at/is_verified_seller: iam.users
+    - store_ids: str.stores.owner_user_ref_id = user_id (بائع فقط)
+    - subscription: sub.seller_subscriptions.seller_ref_id = user_id (بائع فقط،
+      أحدث سجل)؛ None لغير البائع أو بائع بلا سجل (Free الضمنية، CR-014 —
+      لا سجل DB لها أصلًا، فهذا ليس نقصًا بل تصميمًا معتمدًا)
+    - inventory_items_*: str.inventory_items عبر store_ids (بائع فقط)
+    - purchase_requests_*: pur.purchase_requests.buyer_user_ref_id = user_id
+    - offers_*: pur.offers.seller_store_ref_id IN store_ids (بائع فقط)
+    - conversations_count: عدد صفوف مميّزة في com.conversation_participants
+      لهذا المستخدم (Metadata فقط — لا محتوى رسائل، §24)
+    - support_tickets_*: sup.tickets.requester_ref_id = user_id
+    - login_sessions_total/last_login_at/last_logout_at: iam.sessions
+      (created_at = وقت الدخول الفعلي؛ لا عمود IP في هذا الجدول إطلاقًا —
+      Blocker منفصل، ليس تقريبًا)
+    - audit_events_as_actor_total: aud.events.actor_ref_id = user_id فقط
+      (أفعال قام بها هذا المستخدم؛ aud.events لا يملك عمود Target/Subject،
+      فلا يمكن استعلام "إجراءات إدارية اتُّخذت على هذا الحساب" بثقة — Blocker
+      منفصل، لا استدلال من metadata/before_value/after_value غير موثَّق)
+    """
+    generated_at_utc: datetime
+    user_id: str
+    business_code: str
+    primary_role: str
+    account_type: str
+    status: str
+    created_at: datetime
+    is_verified_seller: bool
+
+    store_ids: list
+
+    subscription_plan_code: Optional[str]
+    subscription_status: Optional[str]
+    subscription_expires_at: Optional[datetime]
+
+    inventory_items_total: int
+    inventory_items_by_status: dict
+
+    purchase_requests_total: int
+    purchase_requests_by_status: dict
+
+    offers_total: int
+    offers_by_status: dict
+
+    conversations_count: int
+
+    support_tickets_total: int
+    support_tickets_by_status: dict
+
+    login_sessions_total: int
+    last_login_at: Optional[datetime]
+    last_logout_at: Optional[datetime]
+
+    audit_events_as_actor_total: int
+
+
+@dataclass
+class Store360:
+    """Store 360° (Reports Catalog §8) — تقرير تفصيلي لمتجر واحد.
+
+    SSOT لكل حقل:
+    - store/status/created_at/owner_user_ref_id: str.stores
+    - subscription: sub.seller_subscriptions.seller_ref_id = owner_user_ref_id
+      (الاشتراك تابع للبائع/المستخدم لا للمتجر نفسه — لا عمود اشتراك مباشر
+      على str.stores، هذا النموذج الفعلي القائم، لا اختراع)
+    - inventory_items_*: str.inventory_items.store_id = store_id
+    - offers_*/accepted_offers_total: pur.offers.seller_store_ref_id = store_id
+    - response metrics: من pur.offers/pur.purchase_requests المرتبطة بالمتجر
+    - media_active_images_total: media.attachments حيث owner_type='inventory_item'
+      و owner_ref_id ضمن عناصر مخزون هذا المتجر، status='active'
+    - البلاغات المرتبطة بالمتجر: Blocker — sup.tickets ليس له أي عمود
+      store_ref_id، فلا رابط تقني موثوق بين تذكرة دعم ومتجر محدد حاليًا
+    - Audit events: Blocker لنفس سبب Member360 (لا Target column)، ولا
+      "actor" منطقي على مستوى المتجر أصلًا (المتجر ليس فاعلًا في IAM)
+    """
+    generated_at_utc: datetime
+    store_id: str
+    owner_user_ref_id: str
+    status: str
+    created_at: datetime
+
+    subscription_plan_code: Optional[str]
+    subscription_status: Optional[str]
+    subscription_expires_at: Optional[datetime]
+
+    inventory_items_total: int
+    inventory_items_by_status: dict
+
+    offers_total: int
+    offers_by_status: dict
+    accepted_offers_total: int
+    accepted_offer_rate: float
+
+    avg_hours_to_offer_response: Optional[float]
+
+    media_active_images_total: int
+
+
+@dataclass
+class DataQualityDashboard:
+    """Data Quality Dashboard (Reports Catalog §25) — وفق نموذج البيانات
+    الفعلي فقط. Price Upon Contact حالة صحيحة معتمَدة (pricing_mode='contact')
+    وليست خطأ (نفس المبدأ المذكور صراحة في §25 و§9).
+
+    SSOT لكل حقل:
+    - inventory_items_without_price: str.inventory_items حيث pricing_mode
+      يستلزم سعرًا (fixed) والسعر NULL — استثناء صريح لـpricing_mode='contact'
+    - inventory_items_without_images: str.inventory_items التي لا يوجد لها
+      أي media.attachments (owner_type='inventory_item', status='active')
+    - catalog_parts_incomplete: pct.catalog_parts بحالة 'proposed' (بانتظار
+      اعتماد/إثراء) — لا حقل "اكتمال" صريح آخر في هذا النموذج
+    - catalog_parts_not_linked_to_vehicle: pct.catalog_parts بلا أي صف في
+      cmp.compatibility_records
+    - vehicle_records_incomplete: Blocker — لا عمود/معيار "اكتمال" معتمَد
+      صراحةً على vct.trims في النموذج الحالي (لا نخترع معيارًا)
+    - excel_import_errors_recent: Blocker — لا جدول Excel Import سجلّات
+      موجود فعليًا بعد في هذا المستودع (غير منفَّذ بعد، §27 Not Started)
+    """
+    generated_at_utc: datetime
+
+    inventory_items_without_price: int
+    inventory_items_without_images: int
+    inventory_items_total: int
+
+    catalog_parts_proposed_pending_review: int
+    catalog_parts_not_linked_to_vehicle: int
+    catalog_parts_total: int
+
+
 class RptRepository(ABC):
     """Read-Only بالكامل — لا أي abstractmethod للكتابة، عمدًا، لأن هذا Domain
     لا يملك بيانات، يقرأ فقط من Domains أخرى."""
@@ -253,6 +390,19 @@ class RptRepository(ABC):
     def get_purchase_request_offer_analytics(
         self, date_from: Optional[datetime], date_to: Optional[datetime],
     ) -> PurchaseRequestOfferAnalytics:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_member_360(self, user_id: str) -> Optional[Member360]:
+        """None إن لم يوجد مستخدم بهذا الـid — التحقق من 404 مسؤولية cnt_api/الاستدعاء."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_store_360(self, store_id: str) -> Optional[Store360]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_data_quality_dashboard(self) -> DataQualityDashboard:
         raise NotImplementedError
 
 
@@ -681,6 +831,219 @@ class PostgresRptRepository(RptRepository):
             avg_hours_to_accepted_offer=avg_hours_to_accepted_offer,
         )
 
+    def get_member_360(self, user_id):
+        with self._connection.cursor() as cur:
+            cur.execute(
+                "SELECT id, business_code, primary_role, account_type, status, created_at, is_verified_seller "
+                "FROM iam.users WHERE id = %(id)s",
+                {"id": user_id},
+            )
+            user_row = cur.fetchone()
+            if user_row is None:
+                return None
+
+            cur.execute("SELECT id FROM str.stores WHERE owner_user_ref_id = %(id)s", {"id": user_id})
+            store_ids = [r["id"] for r in cur.fetchall()]
+
+            cur.execute(
+                "SELECT rv.code AS plan_code, ss.status, ss.expires_at "
+                "FROM sub.seller_subscriptions ss "
+                "JOIN sub.plans p ON p.id = ss.plan_id "
+                "JOIN ref.ref_values rv ON rv.id = p.plan_type_ref_id "
+                "WHERE ss.seller_ref_id = %(id)s ORDER BY ss.created_at DESC LIMIT 1",
+                {"id": user_id},
+            )
+            sub_row = cur.fetchone()
+            subscription_plan_code = sub_row["plan_code"] if sub_row else None
+            subscription_status = sub_row["status"] if sub_row else None
+            subscription_expires_at = sub_row["expires_at"] if sub_row else None
+
+            inventory_items_by_status: dict = {}
+            if store_ids:
+                cur.execute(
+                    "SELECT status, COUNT(*) AS c FROM str.inventory_items WHERE store_id = ANY(%(ids)s) GROUP BY status",
+                    {"ids": store_ids},
+                )
+                inventory_items_by_status = {r["status"]: r["c"] for r in cur.fetchall()}
+            inventory_items_total = sum(inventory_items_by_status.values())
+
+            cur.execute(
+                "SELECT status, COUNT(*) AS c FROM pur.purchase_requests WHERE buyer_user_ref_id = %(id)s GROUP BY status",
+                {"id": user_id},
+            )
+            purchase_requests_by_status = {r["status"]: r["c"] for r in cur.fetchall()}
+            purchase_requests_total = sum(purchase_requests_by_status.values())
+
+            offers_by_status: dict = {}
+            if store_ids:
+                cur.execute(
+                    "SELECT status, COUNT(*) AS c FROM pur.offers WHERE seller_store_ref_id = ANY(%(ids)s) GROUP BY status",
+                    {"ids": store_ids},
+                )
+                offers_by_status = {r["status"]: r["c"] for r in cur.fetchall()}
+            offers_total = sum(offers_by_status.values())
+
+            cur.execute(
+                "SELECT COUNT(DISTINCT conversation_id) AS c FROM com.conversation_participants WHERE user_ref_id = %(id)s",
+                {"id": user_id},
+            )
+            conversations_count = cur.fetchone()["c"]
+
+            cur.execute(
+                "SELECT status, COUNT(*) AS c FROM sup.tickets WHERE requester_ref_id = %(id)s GROUP BY status",
+                {"id": user_id},
+            )
+            support_tickets_by_status = {r["status"]: r["c"] for r in cur.fetchall()}
+            support_tickets_total = sum(support_tickets_by_status.values())
+
+            cur.execute(
+                "SELECT COUNT(*) AS c, MAX(created_at) AS last_login, "
+                "MAX(revoked_at) FILTER (WHERE revoked_reason = 'logout') AS last_logout "
+                "FROM iam.sessions WHERE user_id = %(id)s",
+                {"id": user_id},
+            )
+            session_row = cur.fetchone()
+            login_sessions_total = session_row["c"]
+            last_login_at = session_row["last_login"]
+            last_logout_at = session_row["last_logout"]
+
+            cur.execute("SELECT COUNT(*) AS c FROM aud.events WHERE actor_ref_id = %(id)s", {"id": user_id})
+            audit_events_as_actor_total = cur.fetchone()["c"]
+
+        return Member360(
+            generated_at_utc=datetime.utcnow(), user_id=user_row["id"], business_code=user_row["business_code"],
+            primary_role=user_row["primary_role"], account_type=user_row["account_type"],
+            status=user_row["status"], created_at=user_row["created_at"],
+            is_verified_seller=user_row["is_verified_seller"], store_ids=store_ids,
+            subscription_plan_code=subscription_plan_code, subscription_status=subscription_status,
+            subscription_expires_at=subscription_expires_at,
+            inventory_items_total=inventory_items_total, inventory_items_by_status=inventory_items_by_status,
+            purchase_requests_total=purchase_requests_total, purchase_requests_by_status=purchase_requests_by_status,
+            offers_total=offers_total, offers_by_status=offers_by_status,
+            conversations_count=conversations_count,
+            support_tickets_total=support_tickets_total, support_tickets_by_status=support_tickets_by_status,
+            login_sessions_total=login_sessions_total, last_login_at=last_login_at, last_logout_at=last_logout_at,
+            audit_events_as_actor_total=audit_events_as_actor_total,
+        )
+
+    def get_store_360(self, store_id):
+        with self._connection.cursor() as cur:
+            cur.execute(
+                "SELECT id, owner_user_ref_id, status, created_at FROM str.stores WHERE id = %(id)s",
+                {"id": store_id},
+            )
+            store_row = cur.fetchone()
+            if store_row is None:
+                return None
+
+            owner_id = store_row["owner_user_ref_id"]
+            cur.execute(
+                "SELECT rv.code AS plan_code, ss.status, ss.expires_at "
+                "FROM sub.seller_subscriptions ss "
+                "JOIN sub.plans p ON p.id = ss.plan_id "
+                "JOIN ref.ref_values rv ON rv.id = p.plan_type_ref_id "
+                "WHERE ss.seller_ref_id = %(id)s ORDER BY ss.created_at DESC LIMIT 1",
+                {"id": owner_id},
+            )
+            sub_row = cur.fetchone()
+            subscription_plan_code = sub_row["plan_code"] if sub_row else None
+            subscription_status = sub_row["status"] if sub_row else None
+            subscription_expires_at = sub_row["expires_at"] if sub_row else None
+
+            cur.execute(
+                "SELECT status, COUNT(*) AS c FROM str.inventory_items WHERE store_id = %(id)s GROUP BY status",
+                {"id": store_id},
+            )
+            inventory_items_by_status = {r["status"]: r["c"] for r in cur.fetchall()}
+            inventory_items_total = sum(inventory_items_by_status.values())
+
+            cur.execute(
+                "SELECT status, COUNT(*) AS c FROM pur.offers WHERE seller_store_ref_id = %(id)s GROUP BY status",
+                {"id": store_id},
+            )
+            offers_by_status = {r["status"]: r["c"] for r in cur.fetchall()}
+            offers_total = sum(offers_by_status.values())
+            accepted_offers_total = offers_by_status.get("accepted", 0)
+            accepted_offer_rate = (accepted_offers_total / offers_total) if offers_total > 0 else 0.0
+
+            cur.execute(
+                "SELECT AVG(EXTRACT(EPOCH FROM (o.updated_at - pr.created_at)) / 3600.0) AS avg_hours "
+                "FROM pur.offers o JOIN pur.purchase_requests pr ON pr.id = o.purchase_request_id "
+                "WHERE o.seller_store_ref_id = %(id)s",
+                {"id": store_id},
+            )
+            row = cur.fetchone()
+            avg_hours_to_offer_response = float(row["avg_hours"]) if row["avg_hours"] is not None else None
+
+            cur.execute(
+                "SELECT COUNT(*) AS c FROM media.attachments ma "
+                "JOIN str.inventory_items ii ON ii.id = ma.owner_ref_id "
+                "WHERE ma.owner_type = 'inventory_item' AND ma.status = 'active' AND ii.store_id = %(id)s",
+                {"id": store_id},
+            )
+            media_active_images_total = cur.fetchone()["c"]
+
+        return Store360(
+            generated_at_utc=datetime.utcnow(), store_id=store_row["id"], owner_user_ref_id=owner_id,
+            status=store_row["status"], created_at=store_row["created_at"],
+            subscription_plan_code=subscription_plan_code, subscription_status=subscription_status,
+            subscription_expires_at=subscription_expires_at,
+            inventory_items_total=inventory_items_total, inventory_items_by_status=inventory_items_by_status,
+            offers_total=offers_total, offers_by_status=offers_by_status,
+            accepted_offers_total=accepted_offers_total, accepted_offer_rate=accepted_offer_rate,
+            avg_hours_to_offer_response=avg_hours_to_offer_response,
+            media_active_images_total=media_active_images_total,
+        )
+
+    def get_data_quality_dashboard(self):
+        with self._connection.cursor() as cur:
+            cur.execute("SELECT COUNT(*) AS c FROM str.inventory_items")
+            inventory_items_total = cur.fetchone()["c"]
+
+            # Price Upon Contact (pricing_mode='contact_for_price') مستثنى صراحةً
+            # — حالة صحيحة معتمَدة، ليست نقص بيانات (§9، §25). ملاحظة: قيد
+            # CHECK فعلي (chk_inventory_items_price_mode) يمنع أصلًا وجود
+            # fixed_price بلا price_amount على مستوى القاعدة — هذا الاستعلام
+            # يُثبِت ذلك بيانيًا (يُتوقَّع 0 دائمًا)، لا يخترع سيناريو غير ممكن.
+            cur.execute(
+                "SELECT COUNT(*) AS c FROM str.inventory_items "
+                "WHERE pricing_mode = 'fixed_price' AND price_amount IS NULL"
+            )
+            inventory_items_without_price = cur.fetchone()["c"]
+
+            cur.execute("""
+                SELECT COUNT(*) AS c FROM str.inventory_items ii
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM media.attachments ma
+                    WHERE ma.owner_type = 'inventory_item' AND ma.owner_ref_id = ii.id AND ma.status = 'active'
+                )
+            """)
+            inventory_items_without_images = cur.fetchone()["c"]
+
+            cur.execute("SELECT COUNT(*) AS c FROM pct.catalog_parts")
+            catalog_parts_total = cur.fetchone()["c"]
+
+            cur.execute("SELECT COUNT(*) AS c FROM pct.catalog_parts WHERE status = 'proposed'")
+            catalog_parts_proposed_pending_review = cur.fetchone()["c"]
+
+            cur.execute("""
+                SELECT COUNT(*) AS c FROM pct.catalog_parts cp
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM cmp.compatibility_records cr WHERE cr.catalog_part_ref_id = cp.id
+                )
+            """)
+            catalog_parts_not_linked_to_vehicle = cur.fetchone()["c"]
+
+        return DataQualityDashboard(
+            generated_at_utc=datetime.utcnow(),
+            inventory_items_without_price=inventory_items_without_price,
+            inventory_items_without_images=inventory_items_without_images,
+            inventory_items_total=inventory_items_total,
+            catalog_parts_proposed_pending_review=catalog_parts_proposed_pending_review,
+            catalog_parts_not_linked_to_vehicle=catalog_parts_not_linked_to_vehicle,
+            catalog_parts_total=catalog_parts_total,
+        )
+
 
 class InMemoryRptRepository(RptRepository):
     """للاختبارات فقط. لا يحاكي Repositories الأخرى — يقبل بيانات خام مُدخَلة
@@ -700,6 +1063,14 @@ class InMemoryRptRepository(RptRepository):
         self.models: list[dict] = []           # []، فقط للعدّ
         self.generations: list[dict] = []      # []، فقط للعدّ
         self.trims: list[dict] = []            # []، فقط للعدّ
+
+        # Member 360 / Store 360 / Data Quality (Corrective batch)
+        self.conversation_participants: list[dict] = []  # {"conversation_id": str, "user_ref_id": str}
+        self.support_tickets: list[dict] = []             # {"requester_ref_id": str, "status": str}
+        self.sessions: list[dict] = []                    # {"user_id": str, "created_at": datetime, "revoked_at": datetime|None, "revoked_reason": str|None}
+        self.audit_events: list[dict] = []                # {"actor_ref_id": str}
+        self.compatibility_records: list[dict] = []       # {"catalog_part_ref_id": str}
+        self.media_attachments: list[dict] = []           # {"owner_type": str, "owner_ref_id": str, "status": str}
 
     def get_executive_dashboard(self, date_from, date_to):
         users_by_status: dict = {}
@@ -1051,4 +1422,147 @@ class InMemoryRptRepository(RptRepository):
             offers_by_status=offers_by_status, withdrawn_offers_count=withdrawn_offers_count,
             avg_hours_to_first_offer=avg_hours_to_first_offer,
             avg_hours_to_accepted_offer=avg_hours_to_accepted_offer,
+        )
+
+    def get_member_360(self, user_id):
+        user_row = next((u for u in self.users if u.get("id") == user_id), None)
+        if user_row is None:
+            return None
+
+        store_ids = [s["id"] for s in self.stores if s.get("owner_user_ref_id") == user_id]
+
+        sub_row = next((s for s in self.subscriptions if s.get("seller_ref_id") == user_id), None)
+
+        inventory_items_by_status: dict = {}
+        for i in self.inventory_items:
+            if i.get("store_id") in store_ids:
+                inventory_items_by_status[i["status"]] = inventory_items_by_status.get(i["status"], 0) + 1
+
+        purchase_requests_by_status: dict = {}
+        for pr in self.purchase_requests:
+            if pr.get("buyer_user_ref_id") == user_id:
+                purchase_requests_by_status[pr["status"]] = purchase_requests_by_status.get(pr["status"], 0) + 1
+
+        offers_by_status: dict = {}
+        for o in self.offers:
+            if o.get("seller_store_ref_id") in store_ids:
+                offers_by_status[o["status"]] = offers_by_status.get(o["status"], 0) + 1
+
+        conversations_count = len({
+            p["conversation_id"] for p in self.conversation_participants if p.get("user_ref_id") == user_id
+        })
+
+        support_tickets_by_status: dict = {}
+        for t in self.support_tickets:
+            if t.get("requester_ref_id") == user_id:
+                support_tickets_by_status[t["status"]] = support_tickets_by_status.get(t["status"], 0) + 1
+
+        user_sessions = [s for s in self.sessions if s.get("user_id") == user_id]
+        last_login_at = max((s["created_at"] for s in user_sessions), default=None)
+        logout_times = [s["revoked_at"] for s in user_sessions if s.get("revoked_reason") == "logout"]
+        last_logout_at = max(logout_times, default=None)
+
+        audit_events_as_actor_total = sum(1 for e in self.audit_events if e.get("actor_ref_id") == user_id)
+
+        return Member360(
+            generated_at_utc=datetime.utcnow(), user_id=user_row["id"],
+            business_code=user_row.get("business_code", ""), primary_role=user_row["primary_role"],
+            account_type=user_row.get("account_type", ""), status=user_row["status"],
+            created_at=user_row["created_at"], is_verified_seller=user_row.get("is_verified_seller", False),
+            store_ids=store_ids,
+            subscription_plan_code=sub_row.get("plan_code") if sub_row else None,
+            subscription_status=sub_row.get("status") if sub_row else None,
+            subscription_expires_at=sub_row.get("expires_at") if sub_row else None,
+            inventory_items_total=sum(inventory_items_by_status.values()),
+            inventory_items_by_status=inventory_items_by_status,
+            purchase_requests_total=sum(purchase_requests_by_status.values()),
+            purchase_requests_by_status=purchase_requests_by_status,
+            offers_total=sum(offers_by_status.values()), offers_by_status=offers_by_status,
+            conversations_count=conversations_count,
+            support_tickets_total=sum(support_tickets_by_status.values()),
+            support_tickets_by_status=support_tickets_by_status,
+            login_sessions_total=len(user_sessions), last_login_at=last_login_at, last_logout_at=last_logout_at,
+            audit_events_as_actor_total=audit_events_as_actor_total,
+        )
+
+    def get_store_360(self, store_id):
+        store_row = next((s for s in self.stores if s.get("id") == store_id), None)
+        if store_row is None:
+            return None
+
+        owner_id = store_row.get("owner_user_ref_id")
+        sub_row = next((s for s in self.subscriptions if s.get("seller_ref_id") == owner_id), None)
+
+        inventory_items_by_status: dict = {}
+        for i in self.inventory_items:
+            if i.get("store_id") == store_id:
+                inventory_items_by_status[i["status"]] = inventory_items_by_status.get(i["status"], 0) + 1
+
+        offers_by_status: dict = {}
+        for o in self.offers:
+            if o.get("seller_store_ref_id") == store_id:
+                offers_by_status[o["status"]] = offers_by_status.get(o["status"], 0) + 1
+        offers_total = sum(offers_by_status.values())
+        accepted_offers_total = offers_by_status.get("accepted", 0)
+        accepted_offer_rate = (accepted_offers_total / offers_total) if offers_total > 0 else 0.0
+
+        pr_created_at = {pr["id"]: pr["created_at"] for pr in self.purchase_requests if pr.get("created_at")}
+        response_hours = []
+        for o in self.offers:
+            if o.get("seller_store_ref_id") != store_id:
+                continue
+            pr_id = o.get("purchase_request_id")
+            updated = o.get("updated_at")
+            if pr_id in pr_created_at and updated is not None:
+                response_hours.append((updated - pr_created_at[pr_id]).total_seconds() / 3600.0)
+        avg_hours_to_offer_response = (sum(response_hours) / len(response_hours)) if response_hours else None
+
+        store_item_ids = {i["id"] for i in self.inventory_items if i.get("store_id") == store_id and i.get("id")}
+        media_active_images_total = sum(
+            1 for m in self.media_attachments
+            if m.get("owner_type") == "inventory_item" and m.get("status") == "active"
+            and m.get("owner_ref_id") in store_item_ids
+        )
+
+        return Store360(
+            generated_at_utc=datetime.utcnow(), store_id=store_row["id"], owner_user_ref_id=owner_id,
+            status=store_row["status"], created_at=store_row.get("created_at"),
+            subscription_plan_code=sub_row.get("plan_code") if sub_row else None,
+            subscription_status=sub_row.get("status") if sub_row else None,
+            subscription_expires_at=sub_row.get("expires_at") if sub_row else None,
+            inventory_items_total=sum(inventory_items_by_status.values()),
+            inventory_items_by_status=inventory_items_by_status,
+            offers_total=offers_total, offers_by_status=offers_by_status,
+            accepted_offers_total=accepted_offers_total, accepted_offer_rate=accepted_offer_rate,
+            avg_hours_to_offer_response=avg_hours_to_offer_response,
+            media_active_images_total=media_active_images_total,
+        )
+
+    def get_data_quality_dashboard(self):
+        inventory_items_without_price = sum(
+            1 for i in self.inventory_items
+            if i.get("pricing_mode") == "fixed_price" and i.get("price_amount") is None
+        )
+        item_ids_with_active_image = {
+            m["owner_ref_id"] for m in self.media_attachments
+            if m.get("owner_type") == "inventory_item" and m.get("status") == "active"
+        }
+        inventory_items_without_images = sum(
+            1 for i in self.inventory_items if i.get("id") not in item_ids_with_active_image
+        )
+
+        catalog_parts_proposed_pending_review = sum(1 for c in self.catalog_parts if c.get("status") == "proposed")
+        linked_part_ids = {c["catalog_part_ref_id"] for c in self.compatibility_records}
+        catalog_parts_not_linked_to_vehicle = sum(
+            1 for c in self.catalog_parts if c.get("id") not in linked_part_ids
+        )
+
+        return DataQualityDashboard(
+            generated_at_utc=datetime.utcnow(),
+            inventory_items_without_price=inventory_items_without_price,
+            inventory_items_without_images=inventory_items_without_images,
+            inventory_items_total=len(self.inventory_items),
+            catalog_parts_proposed_pending_review=catalog_parts_proposed_pending_review,
+            catalog_parts_not_linked_to_vehicle=catalog_parts_not_linked_to_vehicle,
+            catalog_parts_total=len(self.catalog_parts),
         )
