@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: منصة قطع غيار السيارات - Auto Parts Marketplace API
-  version: 1.25.0
+  version: 1.26.0
   description: 'مواصفة API تنفيذية، تغطي 15 عملية (Operations) عبر 14 مسارًا (Paths): الواجهات التمثيلية
     الخمس الأصلية الموثّقة بالتفصيل في التصميم التفصيلي (الحزمة 2)، بالإضافة إلى 5 عمليات خدمة Auth (اعتماد
     Contract Extension & Implementation Plan): تسجيل خروج، عرض/إضافة/إزالة وسائل الهوية، وعرض مزوّدي الهوية
@@ -2202,6 +2202,116 @@ components:
             type: integer
         verified_sellers_count:
           type: integer
+    SellerStoreAnalyticsResponse:
+      type: object
+      description: 'Consolidated Detailed Analytics — الجزء الثاني (Seller/Store). new_stores_count يتطلب
+        date_from/date_to فعليًا (Inclusive Calendar Dates)؛ باقي الحقول Snapshot لحظي.'
+      properties:
+        generated_at_utc:
+          type: string
+          format: date-time
+        date_from:
+          type: string
+          format: date-time
+          nullable: true
+        date_to:
+          type: string
+          format: date-time
+          nullable: true
+        stores_by_status:
+          type: object
+          additionalProperties:
+            type: integer
+        sellers_without_store_count:
+          type: integer
+          description: بائع مسجَّل بلا متجر — فجوة تفعيل. Snapshot.
+        active_stores_without_inventory_count:
+          type: integer
+          description: متجر نشط بلا أي عنصر مخزون إطلاقًا. Snapshot.
+        top_stores_by_offer_count:
+          type: array
+          items:
+            type: object
+            properties:
+              store_id:
+                type: string
+              offer_count:
+                type: integer
+        new_stores_count:
+          type: integer
+    InventoryCatalogAnalyticsResponse:
+      type: object
+      description: 'Consolidated Detailed Analytics — الجزء الثالث (Inventory/Catalog). لا "عناصر بلا صور":
+        primary_photo_id عمود يتيم فعليًا (لا بنية تحتية صور مخزون بعد) — مؤشر كهذا سيكون مضلِّلًا تمامًا
+        (100% دائمًا). كل الحقول Snapshot لحظي.'
+      properties:
+        generated_at_utc:
+          type: string
+          format: date-time
+        date_from:
+          type: string
+          format: date-time
+          nullable: true
+        date_to:
+          type: string
+          format: date-time
+          nullable: true
+        inventory_items_by_status:
+          type: object
+          additionalProperties:
+            type: integer
+        inventory_items_by_pricing_mode:
+          type: object
+          additionalProperties:
+            type: integer
+        stale_active_inventory_items_count:
+          type: integer
+          description: status='active' وupdated_at أقدم من 30 يومًا.
+        catalog_parts_by_status:
+          type: object
+          additionalProperties:
+            type: integer
+        manufacturers_by_status:
+          type: object
+          additionalProperties:
+            type: integer
+        models_total:
+          type: integer
+        generations_total:
+          type: integer
+        trims_total:
+          type: integer
+    PurchaseRequestOfferAnalyticsResponse:
+      type: object
+      description: 'Consolidated Detailed Analytics — الجزء الرابع (Purchase Request/Offer). كل الحقول
+        Snapshot لحظي. avg_hours_to_first_offer/avg_hours_to_accepted_offer قد تكون null إذا لا بيانات
+        كافية — لا صفر مضلِّل.'
+      properties:
+        generated_at_utc:
+          type: string
+          format: date-time
+        date_from:
+          type: string
+          format: date-time
+          nullable: true
+        date_to:
+          type: string
+          format: date-time
+          nullable: true
+        offers_by_status:
+          type: object
+          additionalProperties:
+            type: integer
+        withdrawn_offers_count:
+          type: integer
+        avg_hours_to_first_offer:
+          type: number
+          format: float
+          nullable: true
+        avg_hours_to_accepted_offer:
+          type: number
+          format: float
+          nullable: true
 paths:
   /api/v1/reports/executive-dashboard:
     get:
@@ -2473,6 +2583,150 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/UserAnalyticsResponse'
+        '400':
+          description: date_from بعد date_to
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: لا جلسة صالحة
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: يتطلب صلاحية مدير النظام
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/reports/seller-store-analytics:
+    get:
+      operationId: getSellerStoreAnalytics
+      summary: تحليلات البائعين والمتاجر التفصيلية (مدير النظام حصريًا)
+      description: 'Consolidated Detailed Analytics. new_stores_count يتطلب date_from/date_to فعليًا؛ باقي
+        الحقول Snapshot لحظي.'
+      x-traceability:
+        requirements: []
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: date_from
+        in: query
+        schema:
+          type: string
+          format: date-time
+      - name: date_to
+        in: query
+        schema:
+          type: string
+          format: date-time
+      responses:
+        '200':
+          description: تحليلات البائعين والمتاجر
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SellerStoreAnalyticsResponse'
+        '400':
+          description: date_from بعد date_to
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: لا جلسة صالحة
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: يتطلب صلاحية مدير النظام
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/reports/inventory-catalog-analytics:
+    get:
+      operationId: getInventoryCatalogAnalytics
+      summary: تحليلات المخزون والكتالوج التفصيلية (مدير النظام حصريًا)
+      description: 'Consolidated Detailed Analytics. لا "عناصر بلا صور" — primary_photo_id عمود يتيم فعليًا.
+        كل الحقول Snapshot لحظي.'
+      x-traceability:
+        requirements: []
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: date_from
+        in: query
+        schema:
+          type: string
+          format: date-time
+      - name: date_to
+        in: query
+        schema:
+          type: string
+          format: date-time
+      responses:
+        '200':
+          description: تحليلات المخزون والكتالوج
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InventoryCatalogAnalyticsResponse'
+        '400':
+          description: date_from بعد date_to
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: لا جلسة صالحة
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: يتطلب صلاحية مدير النظام
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/reports/purchase-request-offer-analytics:
+    get:
+      operationId: getPurchaseRequestOfferAnalytics
+      summary: تحليلات طلبات الشراء والعروض التفصيلية (مدير النظام حصريًا)
+      description: 'Consolidated Detailed Analytics. كل الحقول Snapshot لحظي. avg_hours_to_first_offer/
+        avg_hours_to_accepted_offer قد تكون null بلا بيانات كافية — لا صفر مضلِّل.'
+      x-traceability:
+        requirements: []
+        decisions: []
+      security:
+      - sessionAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CorrelationIdHeader'
+      - name: date_from
+        in: query
+        schema:
+          type: string
+          format: date-time
+      - name: date_to
+        in: query
+        schema:
+          type: string
+          format: date-time
+      responses:
+        '200':
+          description: تحليلات طلبات الشراء والعروض
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurchaseRequestOfferAnalyticsResponse'
         '400':
           description: date_from بعد date_to
           content:
