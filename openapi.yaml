@@ -676,19 +676,68 @@ components:
 
     ArticleCreateRequest:
       type: object
-      required: [title, body]
+      required: [title_ar, body_ar]
       properties:
-        title: { type: string }
-        body: { type: string }
+        title_ar: { type: string }
+        body_ar: { type: string }
+        title_en: { type: string, nullable: true }
+        body_en: { type: string, nullable: true }
+        summary_ar: { type: string, nullable: true, maxLength: 500 }
+        summary_en: { type: string, nullable: true, maxLength: 500 }
+        slug: { type: string, nullable: true, description: "اختياري؛ يُشتق من title_ar عند غيابه (slugify)" }
+        category_ref_id: { type: string, format: uuid, nullable: true, description: "يشير إلى ref.ref_values(ref_type=article_category)" }
+        seo_title_ar: { type: string, nullable: true, maxLength: 70 }
+        seo_title_en: { type: string, nullable: true, maxLength: 70 }
+        seo_description_ar: { type: string, nullable: true, maxLength: 160 }
+        seo_description_en: { type: string, nullable: true, maxLength: 160 }
+
+    ArticleUpdateRequest:
+      type: object
+      description: "كل الحقول اختيارية — تحديث جزئي؛ لا يشمل slug أو status (لهما مسارات مستقلة)"
+      properties:
+        title_ar: { type: string, nullable: true }
+        body_ar: { type: string, nullable: true }
+        title_en: { type: string, nullable: true }
+        body_en: { type: string, nullable: true }
+        summary_ar: { type: string, nullable: true, maxLength: 500 }
+        summary_en: { type: string, nullable: true, maxLength: 500 }
+        category_ref_id: { type: string, format: uuid, nullable: true }
+        seo_title_ar: { type: string, nullable: true, maxLength: 70 }
+        seo_title_en: { type: string, nullable: true, maxLength: 70 }
+        seo_description_ar: { type: string, nullable: true, maxLength: 160 }
+        seo_description_en: { type: string, nullable: true, maxLength: 160 }
+
+    SlugUpdateRequest:
+      type: object
+      required: [slug]
+      properties:
+        slug: { type: string }
 
     ArticleResponse:
       type: object
       properties:
         id: { type: string, format: uuid }
         author_ref_id: { type: string, format: uuid }
-        title: { type: string }
-        body: { type: string }
-        status: { type: string, enum: [unpublished, published] }
+        title_ar: { type: string }
+        body_ar: { type: string }
+        status: { type: string, enum: [draft, published, archived] }
+        title_en: { type: string, nullable: true }
+        body_en: { type: string, nullable: true }
+        summary_ar: { type: string, nullable: true }
+        summary_en: { type: string, nullable: true }
+        slug: { type: string }
+        category_ref_id: { type: string, format: uuid, nullable: true }
+        seo_title_ar: { type: string, nullable: true }
+        seo_title_en: { type: string, nullable: true }
+        seo_description_ar: { type: string, nullable: true }
+        seo_description_en: { type: string, nullable: true }
+        published_at: { type: string, format: date-time, nullable: true }
+
+    ArticleListResponse:
+      type: object
+      properties:
+        results: { type: array, items: { $ref: '#/components/schemas/ArticleResponse' } }
+        pagination: { $ref: '#/components/schemas/PaginationMeta' }
 
     TicketCreateRequest:
       type: object
@@ -810,7 +859,7 @@ paths:
   /api/v1/content/articles:
     post:
       operationId: createArticle
-      summary: إنشاء مقال (محرر الأخبار حصريًا، REQ-CNT-001)
+      summary: إنشاء مقال (محرر الأخبار حصريًا، REQ-CNT-001 + Master Handoff §8)
       x-traceability: { requirements: [REQ-CNT-001], decisions: [] }
       security: [{ sessionAuth: [] }]
       parameters: [{ $ref: '#/components/parameters/CorrelationIdHeader' }]
@@ -820,35 +869,110 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/ArticleCreateRequest' }
       responses:
-        '201': { description: أُنشئ بحالة unpublished, content: { application/json: { schema: { $ref: '#/components/schemas/ArticleResponse' } } } }
-        '400': { description: حقل فارغ, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '201': { description: أُنشئ بحالة draft, content: { application/json: { schema: { $ref: '#/components/schemas/ArticleResponse' } } } }
+        '400': { description: حقل فارغ أو slug غير صالح, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
         '403': { description: ليس محرر أخبار, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '409': { description: slug مستخدَم بالفعل, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '422': { description: تجاوز حد طول حقل SEO, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
     get:
       operationId: listPublishedArticles
-      summary: عرض كل المقالات المنشورة (عام)
-      x-traceability: { requirements: [REQ-CNT-002], decisions: [] }
-      security: [{ sessionAuth: [] }]
-      parameters: [{ $ref: '#/components/parameters/CorrelationIdHeader' }]
+      summary: عرض المقالات المنشورة (عام بالكامل، مُصفحة، CR-017)
+      x-traceability: { requirements: [REQ-CNT-002], decisions: [CR-017] }
+      security: []
+      parameters:
+        - { $ref: '#/components/parameters/CorrelationIdHeader' }
+        - { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: page_size, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+        - { name: category_ref_id, in: query, schema: { type: string, format: uuid } }
       responses:
-        '200': { description: المقالات المنشورة, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/ArticleResponse' } } } } }
+        '200': { description: المقالات المنشورة, content: { application/json: { schema: { $ref: '#/components/schemas/ArticleListResponse' } } } }
+
+  /api/v1/content/articles/admin:
+    get:
+      operationId: listArticlesAdmin
+      summary: قائمة إدارية بكل الحالات (draft/published/archived) — محرر الأخبار حصريًا
+      x-traceability: { requirements: [REQ-CNT-001, REQ-CNT-002], decisions: [] }
+      security: [{ sessionAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/CorrelationIdHeader' }
+        - { name: status, in: query, schema: { type: string, enum: [draft, published, archived] } }
+        - { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: page_size, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+      responses:
+        '200': { description: قائمة إدارية, content: { application/json: { schema: { $ref: '#/components/schemas/ArticleListResponse' } } } }
+        '403': { description: ليس محرر أخبار, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+
+  /api/v1/content/articles/slug/{slug}:
+    get:
+      operationId: getArticleBySlug
+      summary: عرض مقال بواسطة slug — المسار العام المستخدَم فعليًا من صفحة المقال
+      x-traceability: { requirements: [REQ-CNT-001], decisions: [CR-017] }
+      security: []
+      parameters:
+        - { $ref: '#/components/parameters/CorrelationIdHeader' }
+        - { name: slug, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: بيانات المقال, content: { application/json: { schema: { $ref: '#/components/schemas/ArticleResponse' } } } }
+        '401': { description: مقال غير منشور ويتطلب جلسة, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '404': { description: غير موجود, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
 
   /api/v1/content/articles/{articleId}:
     get:
       operationId: getArticle
       summary: عرض مقال بمعرّفه
       x-traceability: { requirements: [REQ-CNT-001], decisions: [] }
-      security: [{ sessionAuth: [] }]
+      security: []
       parameters:
         - { $ref: '#/components/parameters/CorrelationIdHeader' }
         - { name: articleId, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
         '200': { description: بيانات المقال, content: { application/json: { schema: { $ref: '#/components/schemas/ArticleResponse' } } } }
+        '401': { description: مقال غير منشور ويتطلب جلسة, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
         '404': { description: غير موجود, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+    put:
+      operationId: updateArticle
+      summary: تحديث جزئي لحقول مقال (محرر الأخبار حصريًا)
+      x-traceability: { requirements: [REQ-CNT-001], decisions: [] }
+      security: [{ sessionAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/CorrelationIdHeader' }
+        - { name: articleId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ArticleUpdateRequest' }
+      responses:
+        '200': { description: تم التحديث, content: { application/json: { schema: { $ref: '#/components/schemas/ArticleResponse' } } } }
+        '400': { description: حقل غير صالح, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '403': { description: ليس محرر أخبار, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '404': { description: غير موجود, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+
+  /api/v1/content/articles/{articleId}/slug:
+    put:
+      operationId: updateArticleSlug
+      summary: تغيير slug مقال (مسار مستقل عمدًا لتفادي كسر روابط عرَضيًا)
+      x-traceability: { requirements: [REQ-CNT-001], decisions: [] }
+      security: [{ sessionAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/CorrelationIdHeader' }
+        - { name: articleId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SlugUpdateRequest' }
+      responses:
+        '200': { description: تم تغيير slug, content: { application/json: { schema: { $ref: '#/components/schemas/ArticleResponse' } } } }
+        '400': { description: slug غير صالح, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '403': { description: ليس محرر أخبار, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '404': { description: غير موجود, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '409': { description: slug مستخدَم بالفعل, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
 
   /api/v1/content/articles/{articleId}/publish:
     post:
       operationId: publishArticle
-      summary: نشر مقال (محرر الأخبار حصريًا، REQ-CNT-002)
+      summary: نشر مقال من حالة draft فقط (محرر الأخبار حصريًا، REQ-CNT-002)
       x-traceability: { requirements: [REQ-CNT-002], decisions: [] }
       security: [{ sessionAuth: [] }]
       parameters:
@@ -858,20 +982,37 @@ paths:
         '200': { description: أصبح منشورًا, content: { application/json: { schema: { $ref: '#/components/schemas/ArticleResponse' } } } }
         '403': { description: ليس محرر أخبار, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
         '404': { description: غير موجود, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '409': { description: Transition غير مسموح من الحالة الحالية, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
 
   /api/v1/content/articles/{articleId}/unpublish:
     post:
       operationId: unpublishArticle
-      summary: إلغاء نشر مقال (محرر الأخبار حصريًا، REQ-CNT-002)
+      summary: إرجاع مقال منشور إلى draft (محرر الأخبار حصريًا، REQ-CNT-002)
       x-traceability: { requirements: [REQ-CNT-002], decisions: [] }
       security: [{ sessionAuth: [] }]
       parameters:
         - { $ref: '#/components/parameters/CorrelationIdHeader' }
         - { name: articleId, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
-        '200': { description: أصبح غير منشور, content: { application/json: { schema: { $ref: '#/components/schemas/ArticleResponse' } } } }
+        '200': { description: أصبح draft, content: { application/json: { schema: { $ref: '#/components/schemas/ArticleResponse' } } } }
         '403': { description: ليس محرر أخبار, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
         '404': { description: غير موجود, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '409': { description: Transition غير مسموح من الحالة الحالية, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+
+  /api/v1/content/articles/{articleId}/archive:
+    post:
+      operationId: archiveArticle
+      summary: أرشفة مقال (نهائية، من draft أو published) — محرر الأخبار حصريًا
+      x-traceability: { requirements: [REQ-CNT-002], decisions: [] }
+      security: [{ sessionAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/CorrelationIdHeader' }
+        - { name: articleId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: أصبح archived, content: { application/json: { schema: { $ref: '#/components/schemas/ArticleResponse' } } } }
+        '403': { description: ليس محرر أخبار, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '404': { description: غير موجود, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '409': { description: Transition غير مسموح من الحالة الحالية, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
 
   /api/v1/support/tickets:
     post:
