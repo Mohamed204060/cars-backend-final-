@@ -143,14 +143,14 @@ jobs:
             exit 1
           fi
 
-          if [ "$migration_count" -ne 33 ]; then
-            echo "FAIL: migration_count=$migration_count (توقُّع 33) — إن ظهرت قيمة غير 33 هنا رغم كون العدّ الفعلي 33 على القرص، فالسبب الأرجح نسخة قديمة من هذا الملف نفسه (.github/workflows/postgresql-validation.yml) لا تزال حيّة على GitHub بقيمة توقُّع مختلفة (مثل 32) لم تُستبدَل فعليًا بهذا الإصدار." >&2
+          if [ "$migration_count" -ne 34 ]; then
+            echo "FAIL: migration_count=$migration_count (توقُّع 34) — إن ظهرت قيمة غير 34 هنا رغم كون العدّ الفعلي 34 على القرص، فالسبب الأرجح نسخة قديمة من هذا الملف نفسه (.github/workflows/postgresql-validation.yml) لا تزال حيّة على GitHub بقيمة توقُّع مختلفة (مثل 33) لم تُستبدَل فعليًا بهذا الإصدار." >&2
             exit 1
           fi
 
           echo "Execution package structure is valid."
 
-      - name: Create database and apply 33 migrations
+      - name: Create database and apply 34 migrations
         working-directory: postgres_execution_package
         run: |
           set -euo pipefail
