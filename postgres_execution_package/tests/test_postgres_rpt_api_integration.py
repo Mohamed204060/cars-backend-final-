@@ -501,6 +501,16 @@ class TestTrendingPartsOnLivePostgres:
         الجزء من القائمة المحدودة دون أن يكون هناك أي خطأ في منطق العدّ أو
         حدود التاريخ نفسها.
 
+        Root Cause (Run 32519744220): محاولة الإصلاح الأولى قرأت
+        pr_resp.json()["created_at"] بافتراض غير مُتحقَّق منه — PurchaseRequestResponse
+        الفعلي (order_api.py) لا يملك حقل created_at إطلاقًا (حقوله الحقيقية:
+        id, business_code, buyer_user_ref_id, catalog_part_ref_id, trim_ref_id,
+        status, condition_ref_id, notes, trim_model_year_ref_id — تحقَّقتُ من هذا
+        بقراءة class PurchaseRequestResponse مباشرة، لا افتراضًا). القيمة
+        الحقيقية الوحيدة لـcreated_at مصدرها العمود نفسه في
+        pur.purchase_requests (TIMESTAMPTZ)، فنجلبها مباشرة عبر SQL بدل
+        الاعتماد على أي حقل HTTP غير موجود.
+
         الإصلاح: نتحقق من صحة منطق العدّ/حدود الفترة الحالية مباشرة (نفس
         استعلام current_counts الفعلي في get_trending_parts حرفيًا) بدلًا من
         الاعتماد على عضوية القائمة المُرتَّبة والمحدودة — يثبت هذا صحة
@@ -513,20 +523,32 @@ class TestTrendingPartsOnLivePostgres:
         _register_and_login(client, conn, f"buyer{uuid.uuid4().hex[:6]}@example.com")
         pr_resp = client.post("/api/v1/purchase-requests", json={"catalog_part_ref_id": part_id, "trim_ref_id": trim_id})
         assert pr_resp.status_code == 201, pr_resp.text
-        created_at = pr_resp.json()["created_at"]
+        pr_id = pr_resp.json()["id"]  # الحقل الوحيد المستخدَم من الاستجابة هنا؛ id مضمون في PurchaseRequestResponse
         client.post("/api/v1/auth/logout")
+
+        # created_at الحقيقي مباشرة من قاعدة البيانات — غير موجود في عقد
+        # الـAPI إطلاقًا (تحقَّقنا من PurchaseRequestResponse أعلاه)، فلا مصدر
+        # آخر موثوق له غير العمود نفسه. عمود TIMESTAMPTZ عبر psycopg2 يعيد
+        # datetime.datetime واعيًا بالمنطقة الزمنية مباشرة — لا حاجة لأي
+        # تحليل نصي (fromisoformat) لهذه القيمة إطلاقًا.
+        cur = conn.cursor()
+        cur.execute("SELECT created_at FROM pur.purchase_requests WHERE id = %s", (pr_id,))
+        row = cur.fetchone()
+        assert row is not None, "الطلب المُنشَأ توًّا غير موجود في pur.purchase_requests"
+        created_at_dt = row["created_at"]
+        if created_at_dt.tzinfo is not None:
+            created_at_dt = created_at_dt.replace(tzinfo=None)
 
         _register_and_login(client, conn, f"admin{uuid.uuid4().hex[:6]}@example.com", role="admin")
         resp = client.get("/api/v1/reports/trending-parts", params={"window_days": 30})
         assert resp.status_code == 200, resp.text
         body = resp.json()
 
-        # 1) حدود الفترة الحالية المُعادة فعليًا من الخادم تحتوي زمن الإنشاء.
-        # مقارنة Datetime بعد التحليل، لا نصوص خام: created_at قادم من عمود
-        # TIMESTAMPTZ عبر psycopg2 (غالبًا Timezone-aware)، بينما
-        # current_period_from/to مبنية من datetime.utcnow() (Naive) في
-        # rpt_repository.py — تنسيقا isoformat() مختلفان فعليًا، فمقارنة
-        # النصوص مباشرة غير موثوقة. نُطبِّع كلاهما بإسقاط tzinfo قبل المقارنة.
+        # 1) حدود الفترة الحالية المُعادة فعليًا من الخادم تحتوي زمن الإنشاء
+        # الحقيقي. current_period_from/to في استجابة JSON نصوص ISO مصدرها
+        # datetime.utcnow() (Naive) في rpt_repository.py — نحلِّلها عبر
+        # fromisoformat ونُطبِّع tzinfo إن وُجد (دفاعًا فقط) لمقارنة متسقة مع
+        # created_at_dt أعلاه.
         current_from = body["current_period_from"]
         current_to = body["current_period_to"]
 
@@ -536,9 +558,8 @@ class TestTrendingPartsOnLivePostgres:
 
         current_from_dt = _parse_naive_utc(current_from)
         current_to_dt = _parse_naive_utc(current_to)
-        created_at_dt = _parse_naive_utc(created_at)
         assert current_from_dt <= created_at_dt < current_to_dt, (
-            f"created_at={created_at} خارج current_period [{current_from}, {current_to}) "
+            f"created_at={created_at_dt} خارج current_period [{current_from}, {current_to}) "
             "— هذا وحده يُثبِت خطأ حدود تاريخ حقيقيًا لو فشل، لا مشكلة Ranking."
         )
 
@@ -546,7 +567,6 @@ class TestTrendingPartsOnLivePostgres:
         # get_trending_parts حرفيًا (نفس الحدود المُعادة من الاستجابة)، على
         # نفس الاتصال/الـTransaction فيرى الصف المُدرَج للتو قبل أي Commit —
         # هذا يتحقق من منطق العدّ وحدود التاريخ مباشرة، بمعزل تام عن Top-20/Tiebreak.
-        cur = conn.cursor()
         cur.execute(
             "SELECT COUNT(*) AS c FROM pur.purchase_requests "
             "WHERE catalog_part_ref_id = %s AND created_at >= %s AND created_at < %s",
@@ -562,7 +582,7 @@ class TestTrendingPartsOnLivePostgres:
         # 3) فحص إضافي غير حاسم (Best-Effort): إن ظهر الجزء فعليًا ضمن Top 20
         # المُعادة (وارد لو كانت قاعدة الاختبار غير مزدحمة بما يكفي)، يجب أن
         # يطابق current_count الحقيقي — لكن غيابه من هذه القائمة المحدودة
-        # لا يُفشِل الاختبار بعد الآن (هذا بالضبط ما كان الافتراض الخاطئ).
+        # لا يُفشِل الاختبار (هذا بالضبط ما كان الافتراض الخاطئ الأصلي).
         matching = [p for p in body["top_growing_parts"] if p["catalog_part_ref_id"] == part_id]
         if matching:
             assert matching[0]["current_count"] == raw_current_count
