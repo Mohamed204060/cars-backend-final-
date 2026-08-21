@@ -99,6 +99,17 @@ def get_media_view_authorization_checker(request: Request):
     return request.app.state.media_view_authorization_checker
 
 
+def get_public_visibility_checker(request: Request):
+    """
+    Corrective (Featured Image public path): (owner_type, owner_ref_id) ->
+    bool، للمسار العام /media/public/* حصرًا (لا علاقة له بـ
+    media_view_authorization_checker الخاص بـPR/Offer). التنفيذ الحقيقي في
+    media_authorization.build_public_visibility_checker. يجب توصيله عند
+    تركيب التطبيق — نفس نمط Fail Loud القائم لكل Checker في هذا الملف.
+    """
+    return request.app.state.media_public_visibility_checker
+
+
 def _asset_response(asset: Asset) -> MediaAssetResponse:
     return MediaAssetResponse(id=asset.id, original_file_name=asset.original_file_name, status=asset.status,
                                mime_type=asset.mime_type, size_bytes=asset.size_bytes, width=asset.width, height=asset.height)
@@ -284,6 +295,83 @@ def get_attachment_access(
     else:
         display_url = storage.get_public_url(asset.storage_key_display)
         thumbnail_url = storage.get_public_url(asset.storage_key_thumbnail)
+
+    return MediaAccessResponse(
+        attachment_id=attachment.id, public=policy["public"], watermarked=policy["watermark"],
+        display_url=display_url, thumbnail_url=thumbnail_url,
+    )
+
+
+# ===========================================================================
+# Corrective — Featured Image public path: مسار عام مستقل تمامًا عن
+# /attachments أعلاه (الذي يبقى Private/Session-gated بلا أي تعديل — PR/
+# Offer كما هي حرفيًا). لا جلسة هنا إطلاقًا. نطاق صريح: article فقط (ليس
+# "كل Media عامة") + يتطلب أن يكون المقال منشورًا فعليًا عبر
+# public_visibility_checker (CNT boundary، مُحقَن، لا استيراد مباشر لـcnt
+# هنا — نفس نمط SSOT القائم في كل الملف). لا نكشف أي فرق بين "غير موجود"
+# و"موجود لكن Draft/Private" — كلاهما يُعامَل بنفس الاستجابة (قائمة فارغة
+# أو 404) لتفادي أي تسريب معلومات عبر رمز الاستجابة.
+# ===========================================================================
+
+@router.get("/public/attachments", response_model=list[MediaAttachmentResponse])
+def list_public_attachments(
+    owner_type: str, owner_ref_id: str,
+    correlation_id: str = Depends(get_correlation_id),
+    media_repo=Depends(get_media_repository),
+    public_visibility_checker=Depends(get_public_visibility_checker),
+):
+    """نظير عام بلا جلسة لـlist_attachments أعلاه — Metadata فقط (لا URLs).
+    owner_type غير article، أو article غير منشور: قائمة فارغة، لا خطأ."""
+    policy = resolve_visibility_policy(owner_type) if owner_type in ("purchase_request", "offer", "inventory_item", "article") else None
+    if policy is None or not policy["public"]:
+        return []
+    if not public_visibility_checker(owner_type, owner_ref_id):
+        return []
+    try:
+        items = media_repo.list_attachments_for_owner(owner_type, owner_ref_id)
+    except InvalidOwnerTypeError:
+        return []
+    return [_attachment_response(a) for a in items]
+
+
+@router.get("/public/attachments/{attachment_id}/access", response_model=MediaAccessResponse)
+def get_public_attachment_access(
+    attachment_id: str,
+    correlation_id: str = Depends(get_correlation_id),
+    media_repo=Depends(get_media_repository),
+    storage=Depends(get_storage_adapter),
+    public_visibility_checker=Depends(get_public_visibility_checker),
+):
+    """نظير عام بلا جلسة لـget_attachment_access أعلاه — يرفض (404، لا
+    كشف سبب) أي مرفق ليس article منشورًا فعليًا، بما فيه PR/Offer الخاصة
+    كليًا (لا مسار بديل لكشفها هنا مهما كانت حالتها)."""
+    attachment = media_repo.get_attachment_by_id(attachment_id)
+    if attachment is None:
+        raise error(correlation_id, status.HTTP_404_NOT_FOUND, "ATTACHMENT_NOT_FOUND", "المرفق غير موجود.")
+
+    # Corrective (Root Cause): attachment.status هو حالة الربط نفسه، مستقلة
+    # عن حالة المقال (CNT) تمامًا — VALID_ATTACHMENT_STATUSES = {active,
+    # archived} في media_service.py. مقال Published لا يعني أن كل Attachment
+    # تاريخي مرتبط به لا يزال صالحًا للعرض؛ أرشفة/استبدال الصورة البارزة
+    # (عبر /attachments/{id}/archive الحالي، بلا تعديل عليه) يترك الـID
+    # القديم موجودًا في القاعدة بحالة archived — يجب أن يُعامَل كأنه غير
+    # موجود عبر المسار العام، تمامًا مثل مرفق لم يُربَط بمقال منشور أصلًا.
+    if attachment.status != "active":
+        raise error(correlation_id, status.HTTP_404_NOT_FOUND, "ATTACHMENT_NOT_FOUND", "المرفق غير موجود.")
+
+    if attachment.owner_type != "article":
+        raise error(correlation_id, status.HTTP_404_NOT_FOUND, "ATTACHMENT_NOT_FOUND", "المرفق غير موجود.")
+
+    policy = resolve_visibility_policy(attachment.owner_type)
+    if not policy["public"] or not public_visibility_checker(attachment.owner_type, attachment.owner_ref_id):
+        raise error(correlation_id, status.HTTP_404_NOT_FOUND, "ATTACHMENT_NOT_FOUND", "المرفق غير موجود.")
+
+    asset = media_repo.get_asset_by_id(attachment.asset_ref_id)
+    if asset is None:
+        raise error(correlation_id, status.HTTP_404_NOT_FOUND, "ASSET_NOT_FOUND", "الملف غير موجود.")
+
+    display_url = storage.get_public_url(asset.storage_key_display)
+    thumbnail_url = storage.get_public_url(asset.storage_key_thumbnail)
 
     return MediaAccessResponse(
         attachment_id=attachment.id, public=policy["public"], watermarked=policy["watermark"],

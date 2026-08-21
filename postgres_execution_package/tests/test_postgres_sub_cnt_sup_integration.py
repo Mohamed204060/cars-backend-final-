@@ -100,13 +100,26 @@ class TestContentOnLivePostgres:
         app, client, conn = app_and_client
         _register_and_login(client, conn, f"editor-{uuid.uuid4().hex[:8]}@example.com", role="news_editor")
 
-        article_id = client.post("/api/v1/content/articles", json={"title": "خبر", "body": "تفاصيل"}).json()["id"]
+        article_id = client.post(
+            "/api/v1/content/articles",
+            json={"title_ar": "خبر", "body_ar": "تفاصيل", "title_en": "News", "body_en": "Details"},
+        ).json()["id"]
         publish_resp = client.post(f"/api/v1/content/articles/{article_id}/publish")
         assert publish_resp.status_code == 200
 
         cur = conn.cursor()
-        cur.execute("SELECT status FROM cnt.articles WHERE id = %s", (article_id,))
-        assert cur.fetchone()["status"] == "published"
+        cur.execute("SELECT status, slug, published_at FROM cnt.articles WHERE id = %s", (article_id,))
+        row = cur.fetchone()
+        assert row["status"] == "published"
+        assert row["slug"]
+        assert row["published_at"] is not None
+
+    def test_duplicate_slug_conflict_enforced_by_db_constraint(self, app_and_client):
+        app, client, conn = app_and_client
+        _register_and_login(client, conn, f"editor2-{uuid.uuid4().hex[:8]}@example.com", role="news_editor")
+        client.post("/api/v1/content/articles", json={"title_ar": "أ", "body_ar": "ب", "slug": "pg-dup"})
+        resp = client.post("/api/v1/content/articles", json={"title_ar": "ج", "body_ar": "د", "slug": "pg-dup"})
+        assert resp.status_code == 409
 
 
 class TestSupportOnLivePostgres:

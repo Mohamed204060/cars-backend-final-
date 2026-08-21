@@ -36,21 +36,26 @@ ASSET_STATUS_TRANSITIONS = {
     "archived": set(),
 }
 
-VALID_OWNER_TYPES = {"purchase_request", "offer", "inventory_item"}
+VALID_OWNER_TYPES = {"purchase_request", "offer", "inventory_item", "article"}
 VALID_ATTACHMENT_STATUSES = {"active", "archived"}
 
 # §6: حدود الصور النشطة لكل نوع Owner. inventory_item: لا حد جديد معتمَد (None = بلا حد يفرضه هذا الإصدار)
+# article (CMS — Master Handoff §8): صورة بارزة واحدة فقط — لا معرض صور لمقال.
 MAX_ACTIVE_ATTACHMENTS_PER_OWNER = {
     "purchase_request": 5,
     "offer": 5,
     "inventory_item": None,
+    "article": 1,
 }
 
 # §9: Visibility/Watermark تُشتَق من owner_type وقت القراءة — لا تُخزَّن أبدًا
+# article: عام (مقال منشور محتوى تحريري عام) وبلا Watermark (ليست صورة
+# منتج سوقي تحتاج حماية ملكية — نفس منطق عدم Watermark لأي محتوى تحريري).
 OWNER_TYPE_VISIBILITY_POLICY = {
     "purchase_request": {"public": False, "watermark": False},
     "offer": {"public": False, "watermark": False},
     "inventory_item": {"public": True, "watermark": True},
+    "article": {"public": True, "watermark": False},
 }
 
 

@@ -275,7 +275,8 @@ from store_repository import PostgresStoreRepository
 from store_service import Store
 from inventory_item_repository import PostgresInventoryItemRepository
 from inventory_item_service import InventoryItem
-from media_authorization import build_media_ownership_checker, build_media_view_authorization_checker
+from cnt_repository import PostgresCntRepository
+from media_authorization import build_media_ownership_checker, build_media_view_authorization_checker, build_public_visibility_checker
 
 
 @pytest.fixture
@@ -291,11 +292,16 @@ def unit2_app_and_client(conn, tmp_path):
     order_repo = PostgresOrderRepository(conn)
     store_repo = PostgresStoreRepository(conn)
     inventory_repo = PostgresInventoryItemRepository(conn)
+    cnt_repo = PostgresCntRepository(conn)
     app.state.order_repository = order_repo
     app.state.store_repository = store_repo
     app.state.inventory_item_repository = inventory_repo
-    app.state.media_ownership_checker = build_media_ownership_checker(order_repo, store_repo, inventory_repo)
+    app.state.cnt_repository = cnt_repo
+    app.state.media_ownership_checker = build_media_ownership_checker(
+        order_repo, store_repo, inventory_repo, auth_repo=app.state.auth_repository
+    )
     app.state.media_view_authorization_checker = build_media_view_authorization_checker(order_repo, store_repo)
+    app.state.media_public_visibility_checker = build_public_visibility_checker(cnt_repo)
 
     client = TestClient(app, base_url="https://testserver")
     return app, client, conn

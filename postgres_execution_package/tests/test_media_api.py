@@ -332,7 +332,9 @@ from store_repository import InMemoryStoreRepository
 from store_service import Store
 from inventory_item_repository import InMemoryInventoryItemRepository
 from inventory_item_service import InventoryItem
-from media_authorization import build_media_ownership_checker, build_media_view_authorization_checker
+from cnt_repository import InMemoryCntRepository
+from cnt_service import create_article_via_repository, publish_article_via_repository
+from media_authorization import build_media_ownership_checker, build_media_view_authorization_checker, build_public_visibility_checker
 
 
 @pytest.fixture
@@ -355,14 +357,30 @@ def unit2_app_and_client():
     order_repo = InMemoryOrderRepository()
     store_repo = InMemoryStoreRepository()
     inventory_repo = InMemoryInventoryItemRepository()
+    cnt_repo = InMemoryCntRepository()
     app.state.order_repository = order_repo
     app.state.store_repository = store_repo
     app.state.inventory_item_repository = inventory_repo
-    app.state.media_ownership_checker = build_media_ownership_checker(order_repo, store_repo, inventory_repo)
+    app.state.cnt_repository = cnt_repo
+    app.state.media_ownership_checker = build_media_ownership_checker(
+        order_repo, store_repo, inventory_repo, auth_repo=app.state.auth_repository
+    )
     app.state.media_view_authorization_checker = build_media_view_authorization_checker(order_repo, store_repo)
+    app.state.media_public_visibility_checker = build_public_visibility_checker(cnt_repo)
 
     client = TestClient(app, base_url="https://testserver")
     return app, client
+
+
+def _create_published_article(app, author_ref_id: str) -> str:
+    """مساعد اختبار: مقال منشور فعليًا عبر cnt_service مباشرة (بلا مرور
+    عبر cnt_api — media tests لا تحتاج/لا تُضيف cnt_router هنا)."""
+    article = create_article_via_repository(
+        app.state.cnt_repository, author_ref_id=author_ref_id,
+        title_ar="مقال اختبار", body_ar="محتوى",
+    )
+    publish_article_via_repository(app.state.cnt_repository, article.id)
+    return article.id
 
 
 def _upload_ready_asset(client) -> str:
@@ -469,6 +487,7 @@ class TestUnit2RealOwnership:
         # نعيد التفويض الحقيقي، ونحاول الأرشفة من مستخدم عشوائي لا يملك الـPR
         app.state.media_ownership_checker = build_media_ownership_checker(
             app.state.order_repository, app.state.store_repository, app.state.inventory_item_repository,
+            auth_repo=app.state.auth_repository,
         )
         _login_as(app, client, "random-archiver@example.com")
         resp = client.post(f"/api/v1/media/attachments/{att['id']}/archive")
@@ -651,3 +670,255 @@ class TestUnit2AccessEndpoint:
         resp = client.get("/api/v1/media/attachments/ghost-attachment/access")
         assert resp.status_code == 404
         assert resp.json()["detail"]["error_code"] == "ATTACHMENT_NOT_FOUND"
+
+
+class TestArticleOwnerTypeCms:
+    """CMS Featured Image (Master Handoff §8): owner_type='article' —
+    أي news_editor يملك صلاحية الربط (لا نموذج ملكية فردية للمقالات، نفس
+    _ensure_news_editor في cnt_api.py حرفيًا). لا نستخدم عمود DB منفصل على
+    cnt.articles — media.attachments هو الـSSOT الوحيد، كما في
+    purchase_request/offer/inventory_item."""
+
+    def test_news_editor_can_bind_featured_image(self, unit2_app_and_client):
+        app, client = unit2_app_and_client
+        _login_as(app, client, "editor-cms-1@example.com", role="news_editor")
+        asset_id = _upload_ready_asset(client)
+        resp = client.post("/api/v1/media/attachments", json={
+            "asset_ref_id": asset_id, "owner_type": "article", "owner_ref_id": "article-fake-1",
+        })
+        assert resp.status_code == 201
+
+    def test_non_editor_cannot_bind_featured_image(self, unit2_app_and_client):
+        app, client = unit2_app_and_client
+        _login_as(app, client, "buyer-cms-1@example.com", role="individual_buyer")
+        asset_id = _upload_ready_asset(client)
+        resp = client.post("/api/v1/media/attachments", json={
+            "asset_ref_id": asset_id, "owner_type": "article", "owner_ref_id": "article-fake-2",
+        })
+        assert resp.status_code == 403
+
+    def test_article_attachment_limit_is_one(self, unit2_app_and_client):
+        app, client = unit2_app_and_client
+        _login_as(app, client, "editor-cms-2@example.com", role="news_editor")
+        first_asset = _upload_ready_asset(client)
+        client.post("/api/v1/media/attachments", json={
+            "asset_ref_id": first_asset, "owner_type": "article", "owner_ref_id": "article-fake-3",
+        })
+        second_asset = _upload_ready_asset(client)
+        resp = client.post("/api/v1/media/attachments", json={
+            "asset_ref_id": second_asset, "owner_type": "article", "owner_ref_id": "article-fake-3",
+        })
+        assert resp.status_code == 409, "صورة بارزة واحدة فقط لكل مقال (§6 CMS)"
+
+    def test_article_attachment_is_public_no_watermark(self, unit2_app_and_client):
+        app, client = unit2_app_and_client
+        _login_as(app, client, "editor-cms-3@example.com", role="news_editor")
+        asset_id = _upload_ready_asset(client)
+        att = client.post("/api/v1/media/attachments", json={
+            "asset_ref_id": asset_id, "owner_type": "article", "owner_ref_id": "article-fake-4",
+        }).json()
+        client.post("/api/v1/auth/logout")
+
+        # عام (أي مستخدم مسجَّل يراه، بلا فحص ملكية إضافي — نفس دلالة
+        # inventory_item الحالية حرفيًا)، وبلا Watermark (محتوى تحريري لا
+        # قطعة سوقية). لا جلسة إطلاقًا يبقى 401 هنا (سلوك Endpoint القائم
+        # لكل الأنواع، لم نغيّره لـarticle تحديدًا).
+        _login_as(app, client, "random-reader@example.com", role="individual_buyer")
+        resp = client.get(f"/api/v1/media/attachments/{att['id']}/access")
+        assert resp.status_code == 200
+        assert resp.json()["public"] is True
+        assert resp.json()["watermarked"] is False
+
+    def test_missing_auth_repo_fails_closed_and_warns(self):
+        """إثبات مباشر لسلوك media_authorization.py نفسه (لا عبر FastAPI):
+        استدعاء build_media_ownership_checker بلا auth_repo (القيمة
+        الافتراضية None) يرفض article دائمًا (Fail-closed) + يُصدِر
+        RuntimeWarning صريحًا — لا فشل صامت لو نسي تركيب حقيقي تمرير
+        auth_repo. هذا الاختبار يثبت آلية التحذير نفسها، لا Wiring تطبيق
+        فعلي (لا يوجد main.py/app.py في هذا المستودع لإثبات ذلك عبره —
+        موثَّق صراحة في media_authorization.py)."""
+        import warnings
+        from media_authorization import build_media_ownership_checker
+
+        checker = build_media_ownership_checker(order_repo=None, store_repo=None, inventory_repo=None)
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            result = checker("article", "article-x", "uploader-x")
+
+        assert result is False
+        assert any(issubclass(w.category, RuntimeWarning) for w in caught)
+        assert any("auth_repo" in str(w.message) for w in caught)
+
+
+class TestPublicMediaPath:
+    """Corrective — Featured Image public path: /media/public/* بلا جلسة
+    إطلاقًا. يغطي أربع سيناريوهات مطلوبة صراحة."""
+
+    def test_anonymous_can_access_published_article_image(self, unit2_app_and_client):
+        app, client = unit2_app_and_client
+        editor_id = _login_as(app, client, "pub-editor-1@example.com", role="news_editor")
+        article_id = _create_published_article(app, editor_id)
+        asset_id = _upload_ready_asset(client)
+        att = client.post("/api/v1/media/attachments", json={
+            "asset_ref_id": asset_id, "owner_type": "article", "owner_ref_id": article_id,
+        }).json()
+        client.post("/api/v1/auth/logout")
+
+        # بلا أي جلسة إطلاقًا — لا login هنا نهائيًا
+        list_resp = client.get(
+            "/api/v1/media/public/attachments",
+            params={"owner_type": "article", "owner_ref_id": article_id},
+        )
+        assert list_resp.status_code == 200
+        assert len(list_resp.json()) == 1
+
+        access_resp = client.get(f"/api/v1/media/public/attachments/{att['id']}/access")
+        assert access_resp.status_code == 200
+        assert access_resp.json()["public"] is True
+        assert access_resp.json()["watermarked"] is False
+
+    def test_archived_attachment_not_accessible_via_old_id_after_replacement(self, unit2_app_and_client):
+        """Root Cause fix: مقال Published لا يعني أن كل Attachment تاريخي
+        مربوط به صالح — أرشفة/استبدال الصورة البارزة يجب أن تُسقِط الوصول
+        العام بالـID القديم فورًا، رغم بقاء المقال منشورًا طوال الوقت."""
+        app, client = unit2_app_and_client
+        editor_id = _login_as(app, client, "pub-editor-replace@example.com", role="news_editor")
+        article_id = _create_published_article(app, editor_id)
+
+        # الصورة الأولى — تُربَط وتُتاح للعامة فعليًا أولًا
+        first_asset_id = _upload_ready_asset(client)
+        first_att = client.post("/api/v1/media/attachments", json={
+            "asset_ref_id": first_asset_id, "owner_type": "article", "owner_ref_id": article_id,
+        }).json()
+
+        pre_archive_check = client.get(f"/api/v1/media/public/attachments/{first_att['id']}/access")
+        assert pre_archive_check.status_code == 200, "Sanity: الصورة الأولى متاحة للعامة قبل الأرشفة"
+
+        # نؤرشف الأولى (نفس مسار /attachments/{id}/archive الموجود، بلا تعديل عليه)
+        archive_resp = client.post(f"/api/v1/media/attachments/{first_att['id']}/archive")
+        assert archive_resp.status_code == 200
+        assert archive_resp.json()["status"] == "archived"
+
+        # نربط صورة بديلة (المقال ما زال Published طوال الوقت — بلا تغيير حالته إطلاقًا)
+        second_asset_id = _upload_ready_asset(client)
+        second_att = client.post("/api/v1/media/attachments", json={
+            "asset_ref_id": second_asset_id, "owner_type": "article", "owner_ref_id": article_id,
+        }).json()
+        client.post("/api/v1/auth/logout")
+
+        # الـID القديم: 404 رغم أن المقال لا يزال منشورًا وrecord الـAttachment موجود فعليًا في القاعدة
+        old_id_resp = client.get(f"/api/v1/media/public/attachments/{first_att['id']}/access")
+        assert old_id_resp.status_code == 404
+        assert old_id_resp.json()["detail"]["error_code"] == "ATTACHMENT_NOT_FOUND"
+
+        # الـID الجديد: يعمل بشكل طبيعي
+        new_id_resp = client.get(f"/api/v1/media/public/attachments/{second_att['id']}/access")
+        assert new_id_resp.status_code == 200
+
+        # قائمة المرفقات العامة تعرض النشط فقط (1)، لا الاثنين
+        list_resp = client.get(
+            "/api/v1/media/public/attachments",
+            params={"owner_type": "article", "owner_ref_id": article_id},
+        )
+        assert len(list_resp.json()) == 1
+        assert list_resp.json()[0]["id"] == second_att["id"]
+        app, client = unit2_app_and_client
+        buyer_id = _login_as(app, client, "pub-buyer-1@example.com")
+        pr = app.state.order_repository.insert_purchase_request(
+            PurchaseRequest(id="", buyer_user_ref_id=buyer_id, catalog_part_ref_id="part-1", trim_ref_id="trim-1")
+        )
+        asset_id = _upload_ready_asset(client)
+        att = client.post("/api/v1/media/attachments", json={
+            "asset_ref_id": asset_id, "owner_type": "purchase_request", "owner_ref_id": pr.id,
+        }).json()
+        client.post("/api/v1/auth/logout")
+
+        list_resp = client.get(
+            "/api/v1/media/public/attachments",
+            params={"owner_type": "purchase_request", "owner_ref_id": pr.id},
+        )
+        assert list_resp.status_code == 200
+        assert list_resp.json() == [], "لا كشف Metadata حتى (قائمة فارغة، لا 403 يفصح عن الوجود)"
+
+        access_resp = client.get(f"/api/v1/media/public/attachments/{att['id']}/access")
+        assert access_resp.status_code == 404, "المسار العام لا يكشف مرفقات Private إطلاقًا، حتى بمعرّف صحيح"
+        assert access_resp.json()["detail"]["error_code"] == "ATTACHMENT_NOT_FOUND"
+
+    def test_anonymous_cannot_use_public_path_for_private_offer_media(self, unit2_app_and_client):
+        app, client = unit2_app_and_client
+        seller_id = _login_as(app, client, "pub-seller-1@example.com")
+        store = app.state.store_repository.insert_store(Store(id="", owner_user_ref_id=seller_id, status="active"))
+        pr = app.state.order_repository.insert_purchase_request(
+            PurchaseRequest(id="", buyer_user_ref_id="some-buyer", catalog_part_ref_id="part-1", trim_ref_id="trim-1")
+        )
+        offer = app.state.order_repository.insert_offer(
+            Offer(id="", purchase_request_id=pr.id, seller_store_ref_id=store.id,
+                  amount=100.0, currency="SAR", provides_shipping=False)
+        )
+        asset_id = _upload_ready_asset(client)
+        att = client.post("/api/v1/media/attachments", json={
+            "asset_ref_id": asset_id, "owner_type": "offer", "owner_ref_id": offer.id,
+        }).json()
+        client.post("/api/v1/auth/logout")
+
+        access_resp = client.get(f"/api/v1/media/public/attachments/{att['id']}/access")
+        assert access_resp.status_code == 404
+
+    def test_draft_article_image_not_publicly_exposed(self, unit2_app_and_client):
+        app, client = unit2_app_and_client
+        editor_id = _login_as(app, client, "pub-editor-2@example.com", role="news_editor")
+        # مقال Draft — بلا publish_article_via_repository هنا عمدًا
+        from cnt_service import create_article_via_repository as _create
+        article = _create(app.state.cnt_repository, author_ref_id=editor_id, title_ar="مسودة", body_ar="نص")
+        asset_id = _upload_ready_asset(client)
+        att = client.post("/api/v1/media/attachments", json={
+            "asset_ref_id": asset_id, "owner_type": "article", "owner_ref_id": article.id,
+        }).json()
+        client.post("/api/v1/auth/logout")
+
+        list_resp = client.get(
+            "/api/v1/media/public/attachments",
+            params={"owner_type": "article", "owner_ref_id": article.id},
+        )
+        assert list_resp.json() == [], "مقال Draft: لا صورة تُكشَف للعامة رغم أن Attachment نفسه active"
+
+        access_resp = client.get(f"/api/v1/media/public/attachments/{att['id']}/access")
+        assert access_resp.status_code == 404
+
+    def test_archived_article_image_not_publicly_exposed(self, unit2_app_and_client):
+        app, client = unit2_app_and_client
+        editor_id = _login_as(app, client, "pub-editor-3@example.com", role="news_editor")
+        article_id = _create_published_article(app, editor_id)
+        asset_id = _upload_ready_asset(client)
+        att = client.post("/api/v1/media/attachments", json={
+            "asset_ref_id": asset_id, "owner_type": "article", "owner_ref_id": article_id,
+        }).json()
+        from cnt_service import archive_article_via_repository
+        archive_article_via_repository(app.state.cnt_repository, article_id)
+        client.post("/api/v1/auth/logout")
+
+        access_resp = client.get(f"/api/v1/media/public/attachments/{att['id']}/access")
+        assert access_resp.status_code == 404, "أُرشِف المقال بعد النشر — الصورة يجب ألا تبقى مكشوفة للعامة"
+
+    def test_article_without_image_public_list_is_empty_not_error(self, unit2_app_and_client):
+        app, client = unit2_app_and_client
+        editor_id = _login_as(app, client, "pub-editor-4@example.com", role="news_editor")
+        article_id = _create_published_article(app, editor_id)
+        client.post("/api/v1/auth/logout")
+
+        resp = client.get(
+            "/api/v1/media/public/attachments",
+            params={"owner_type": "article", "owner_ref_id": article_id},
+        )
+        assert resp.status_code == 200
+        assert resp.json() == [], "مقال منشور بلا صورة بارزة: قائمة فارغة سليمة، لا خطأ"
+
+    def test_nonexistent_owner_type_returns_empty_not_error(self, unit2_app_and_client):
+        _, client = unit2_app_and_client
+        resp = client.get(
+            "/api/v1/media/public/attachments",
+            params={"owner_type": "inventory_item", "owner_ref_id": "whatever"},
+        )
+        assert resp.status_code == 200
+        assert resp.json() == [], "inventory_item خارج نطاق المسار العام حاليًا عمدًا (لا 'كل Media عامة')"
