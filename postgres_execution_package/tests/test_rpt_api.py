@@ -691,3 +691,276 @@ class TestPurchaseRequestOfferAnalytics:
         assert body["withdrawn_offers_count"] == 1
         assert abs(body["avg_hours_to_first_offer"] - 1.0) < 0.01  # أول عرض عند الساعة 9 من أصل الطلب في الساعة 10
         assert abs(body["avg_hours_to_accepted_offer"] - 8.0) < 0.01  # العرض المقبول تحدَّث عند الساعة 2 من أصل الطلب في الساعة 10
+
+
+class TestMember360:
+
+    def _seed_member(self, repo, user_id="member-1", **overrides):
+        base = {
+            "id": user_id, "business_code": "USR-0001", "primary_role": "individual_seller",
+            "account_type": "individual", "status": "active", "created_at": datetime.utcnow(),
+            "is_verified_seller": True,
+        }
+        base.update(overrides)
+        repo.users = [base]
+
+    def test_requires_authentication(self, app_and_client):
+        _, client = app_and_client
+        resp = client.get("/api/v1/reports/member-360/member-1")
+        assert resp.status_code == 401
+
+    def test_forbidden_for_non_admin(self, app_and_client):
+        app, client = app_and_client
+        self._seed_member(app.state.rpt_repository)
+        _login_as(app, client, "buyer1@example.com", role="individual_buyer")
+        resp = client.get("/api/v1/reports/member-360/member-1")
+        assert resp.status_code == 403
+
+    def test_allowed_for_admin(self, app_and_client):
+        app, client = app_and_client
+        self._seed_member(app.state.rpt_repository)
+        _login_as(app, client, "admin1@example.com", role="admin")
+        resp = client.get("/api/v1/reports/member-360/member-1")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["user_id"] == "member-1"
+        assert body["primary_role"] == "individual_seller"
+        # طبقة حساسة غير موجودة إطلاقًا في هذا الـEndpoint — لا تسريب
+        assert "login_sessions_total" not in body
+        assert "conversations_count" not in body
+
+    def test_404_for_nonexistent_user(self, app_and_client):
+        app, client = app_and_client
+        _login_as(app, client, "admin2@example.com", role="admin")
+        resp = client.get("/api/v1/reports/member-360/does-not-exist")
+        assert resp.status_code == 404
+        assert resp.json()["detail"]["error_code"] == "USER_NOT_FOUND"
+
+    def test_aggregates_store_inventory_offers(self, app_and_client):
+        app, client = app_and_client
+        repo = app.state.rpt_repository
+        self._seed_member(repo)
+        repo.stores = [{"id": "store-1", "owner_user_ref_id": "member-1", "status": "active"}]
+        repo.inventory_items = [
+            {"status": "active", "store_id": "store-1"},
+            {"status": "hidden", "store_id": "store-1"},
+            {"status": "active", "store_id": "other-store"},  # لا يجب احتسابه
+        ]
+        repo.offers = [
+            {"status": "accepted", "seller_store_ref_id": "store-1"},
+            {"status": "submitted", "seller_store_ref_id": "store-1"},
+        ]
+        _login_as(app, client, "admin3@example.com", role="admin")
+        body = client.get("/api/v1/reports/member-360/member-1").json()
+        assert body["store_ids"] == ["store-1"]
+        assert body["inventory_items_total"] == 2
+        assert body["inventory_items_by_status"] == {"active": 1, "hidden": 1}
+        assert body["offers_total"] == 2
+
+
+class TestMember360Sensitive:
+
+    def _seed_member(self, repo, user_id="member-2"):
+        repo.users = [{
+            "id": user_id, "business_code": "USR-0002", "primary_role": "individual_buyer",
+            "account_type": "individual", "status": "active", "created_at": datetime.utcnow(),
+            "is_verified_seller": False,
+        }]
+
+    def test_forbidden_for_regular_admin(self, app_and_client):
+        """§36-37: SYSTEM_ADMIN_ROLES العامة لا تكفي — admin عادي يُرفَض."""
+        app, client = app_and_client
+        self._seed_member(app.state.rpt_repository)
+        _login_as(app, client, "admin4@example.com", role="admin")
+        resp = client.get("/api/v1/reports/member-360/member-2/sensitive")
+        assert resp.status_code == 403
+
+    def test_allowed_for_super_admin_only(self, app_and_client):
+        app, client = app_and_client
+        self._seed_member(app.state.rpt_repository)
+        _login_as(app, client, "root1@example.com", role="super_admin")
+        resp = client.get("/api/v1/reports/member-360/member-2/sensitive")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "login_sessions_total" in body
+        assert "conversations_count" in body
+        # لا محتوى رسائل إطلاقًا — Metadata فقط
+        assert "message" not in body
+        assert "body" not in body
+
+    def test_login_sessions_from_iam_sessions(self, app_and_client):
+        app, client = app_and_client
+        repo = app.state.rpt_repository
+        self._seed_member(repo)
+        now = datetime.utcnow()
+        repo.sessions = [
+            {"user_id": "member-2", "created_at": now - timedelta(days=2), "revoked_at": now - timedelta(days=1), "revoked_reason": "logout"},
+            {"user_id": "member-2", "created_at": now - timedelta(hours=1), "revoked_at": None, "revoked_reason": None},
+        ]
+        _login_as(app, client, "root2@example.com", role="super_admin")
+        body = client.get("/api/v1/reports/member-360/member-2/sensitive").json()
+        assert body["login_sessions_total"] == 2
+        assert body["last_login_at"] is not None
+
+    def test_conversations_count_is_metadata_only(self, app_and_client):
+        app, client = app_and_client
+        repo = app.state.rpt_repository
+        self._seed_member(repo)
+        repo.conversation_participants = [
+            {"conversation_id": "conv-1", "user_ref_id": "member-2"},
+            {"conversation_id": "conv-2", "user_ref_id": "member-2"},
+            {"conversation_id": "conv-1", "user_ref_id": "member-2"},  # نفس المحادثة — لا يُحتسب مرتين
+        ]
+        _login_as(app, client, "root3@example.com", role="super_admin")
+        body = client.get("/api/v1/reports/member-360/member-2/sensitive").json()
+        assert body["conversations_count"] == 2
+
+    def test_admin_safe_endpoint_never_calls_sensitive_repository_method(self, app_and_client):
+        """Corrective — إثبات معماري مباشر (ليس فقط اختبار سلوك HTTP): يُغلِّف
+        كائن الـRepository الفعلي بمُتتبِّع استدعاءات، ثم يتحقق أن استدعاء
+        /member-360/{id} العام لا يستدعي get_member_360_sensitive إطلاقًا،
+        وأن /member-360/{id}/sensitive لا يستدعي get_member_360 إطلاقًا. هذا
+        يمنع تكرار Bug التوصيل (Endpoint حساس يستدعي طريقة Admin-safe أو
+        العكس) حتى لو تطابقت الاستجابة HTTP ظاهريًا."""
+        app, client = app_and_client
+        self._seed_member(app.state.rpt_repository)
+
+        calls = {"get_member_360": 0, "get_member_360_sensitive": 0}
+        real_repo = app.state.rpt_repository
+        original_admin_safe = real_repo.get_member_360
+        original_sensitive = real_repo.get_member_360_sensitive
+
+        def tracked_admin_safe(user_id):
+            calls["get_member_360"] += 1
+            return original_admin_safe(user_id)
+
+        def tracked_sensitive(user_id):
+            calls["get_member_360_sensitive"] += 1
+            return original_sensitive(user_id)
+
+        real_repo.get_member_360 = tracked_admin_safe
+        real_repo.get_member_360_sensitive = tracked_sensitive
+
+        _login_as(app, client, "root5@example.com", role="super_admin")
+
+        # المسار العام أولًا
+        resp1 = client.get("/api/v1/reports/member-360/member-2")
+        assert resp1.status_code == 200
+        assert calls == {"get_member_360": 1, "get_member_360_sensitive": 0}, \
+            "المسار العام استدعى get_member_360_sensitive — تسريب Data Access حساسة"
+
+        # ثم المسار الحساس
+        resp2 = client.get("/api/v1/reports/member-360/member-2/sensitive")
+        assert resp2.status_code == 200
+        assert calls == {"get_member_360": 1, "get_member_360_sensitive": 1}, \
+            "المسار الحساس لم يستدعِ get_member_360_sensitive (أو استدعى get_member_360 خطأً)"
+
+
+class TestStore360:
+
+    def _seed_store(self, repo, store_id="store-x"):
+        repo.stores = [{"id": store_id, "owner_user_ref_id": "owner-1", "status": "active", "created_at": datetime.utcnow()}]
+
+    def test_requires_authentication(self, app_and_client):
+        _, client = app_and_client
+        resp = client.get("/api/v1/reports/store-360/store-x")
+        assert resp.status_code == 401
+
+    def test_forbidden_for_non_admin(self, app_and_client):
+        app, client = app_and_client
+        self._seed_store(app.state.rpt_repository)
+        _login_as(app, client, "seller1@example.com", role="individual_seller")
+        resp = client.get("/api/v1/reports/store-360/store-x")
+        assert resp.status_code == 403
+
+    def test_allowed_for_admin(self, app_and_client):
+        app, client = app_and_client
+        self._seed_store(app.state.rpt_repository)
+        _login_as(app, client, "admin5@example.com", role="admin")
+        resp = client.get("/api/v1/reports/store-360/store-x")
+        assert resp.status_code == 200
+        assert resp.json()["store_id"] == "store-x"
+
+    def test_404_for_nonexistent_store(self, app_and_client):
+        app, client = app_and_client
+        _login_as(app, client, "admin6@example.com", role="admin")
+        resp = client.get("/api/v1/reports/store-360/ghost-store")
+        assert resp.status_code == 404
+        assert resp.json()["detail"]["error_code"] == "STORE_NOT_FOUND"
+
+    def test_accepted_offer_rate_calculation(self, app_and_client):
+        app, client = app_and_client
+        repo = app.state.rpt_repository
+        self._seed_store(repo)
+        repo.offers = [
+            {"status": "accepted", "seller_store_ref_id": "store-x"},
+            {"status": "accepted", "seller_store_ref_id": "store-x"},
+            {"status": "rejected", "seller_store_ref_id": "store-x"},
+            {"status": "submitted", "seller_store_ref_id": "other-store"},
+        ]
+        _login_as(app, client, "admin7@example.com", role="admin")
+        body = client.get("/api/v1/reports/store-360/store-x").json()
+        assert body["offers_total"] == 3
+        assert body["accepted_offers_total"] == 2
+        assert abs(body["accepted_offer_rate"] - (2 / 3)) < 0.001
+
+    def test_no_sensitive_endpoint_exists_for_store(self, app_and_client):
+        """Store 360 بلا طبقة حساسة — لا Endpoint /sensitive له إطلاقًا."""
+        app, client = app_and_client
+        self._seed_store(app.state.rpt_repository)
+        _login_as(app, client, "root4@example.com", role="super_admin")
+        resp = client.get("/api/v1/reports/store-360/store-x/sensitive")
+        assert resp.status_code == 404
+
+
+class TestDataQualityDashboard:
+
+    def test_requires_authentication(self, app_and_client):
+        _, client = app_and_client
+        resp = client.get("/api/v1/reports/data-quality")
+        assert resp.status_code == 401
+
+    def test_forbidden_for_non_admin(self, app_and_client):
+        app, client = app_and_client
+        _login_as(app, client, "buyer2@example.com", role="individual_buyer")
+        resp = client.get("/api/v1/reports/data-quality")
+        assert resp.status_code == 403
+
+    def test_allowed_for_admin(self, app_and_client):
+        app, client = app_and_client
+        _login_as(app, client, "admin8@example.com", role="admin")
+        resp = client.get("/api/v1/reports/data-quality")
+        assert resp.status_code == 200
+
+    def test_price_upon_contact_excluded_from_without_price(self, app_and_client):
+        """§9/§25: pricing_mode='contact_for_price' حالة صحيحة، ليست نقصًا."""
+        app, client = app_and_client
+        repo = app.state.rpt_repository
+        repo.inventory_items = [
+            {"id": "i1", "pricing_mode": "fixed_price", "price_amount": None},   # نقص حقيقي
+            {"id": "i2", "pricing_mode": "contact_for_price", "price_amount": None},  # صحيح، مستثنى
+            {"id": "i3", "pricing_mode": "fixed_price", "price_amount": 100},
+        ]
+        _login_as(app, client, "admin9@example.com", role="admin")
+        body = client.get("/api/v1/reports/data-quality").json()
+        assert body["inventory_items_without_price"] == 1
+        assert body["inventory_items_total"] == 3
+
+    def test_items_without_images(self, app_and_client):
+        app, client = app_and_client
+        repo = app.state.rpt_repository
+        repo.inventory_items = [{"id": "i1"}, {"id": "i2"}]
+        repo.media_attachments = [{"owner_type": "inventory_item", "owner_ref_id": "i1", "status": "active"}]
+        _login_as(app, client, "admin10@example.com", role="admin")
+        body = client.get("/api/v1/reports/data-quality").json()
+        assert body["inventory_items_without_images"] == 1
+
+    def test_catalog_parts_not_linked_to_vehicle(self, app_and_client):
+        app, client = app_and_client
+        repo = app.state.rpt_repository
+        repo.catalog_parts = [{"id": "p1", "status": "approved"}, {"id": "p2", "status": "proposed"}]
+        repo.compatibility_records = [{"catalog_part_ref_id": "p1"}]
+        _login_as(app, client, "admin11@example.com", role="admin")
+        body = client.get("/api/v1/reports/data-quality").json()
+        assert body["catalog_parts_not_linked_to_vehicle"] == 1
+        assert body["catalog_parts_proposed_pending_review"] == 1

@@ -653,3 +653,84 @@ class TestPurchaseRequestOfferAnalyticsOnLivePostgres:
         app, client, conn = app_and_client
         _register_and_login(client, conn, f"buyer{uuid.uuid4().hex[:6]}@example.com", role="individual_buyer")
         assert client.get("/api/v1/reports/purchase-request-offer-analytics").status_code == 403
+
+
+class TestMember360OnLivePostgres:
+    """يتحقق أن SQL الفعلي (JOIN عبر iam/str/sub/ref/pur/com/sup/iam.sessions/
+    aud عبر 8 مخططات مختلفة) يُنفَّذ بلا خطأ نحوي على PostgreSQL حي — أهم شيء
+    لا يكتشفه InMemory إطلاقًا."""
+
+    def test_query_executes_with_empty_related_tables(self, app_and_client):
+        app, client, conn = app_and_client
+        admin_id = _register_and_login(client, conn, f"admin-m360-{uuid.uuid4().hex[:6]}@example.com", role="admin")
+        # المستخدم نفسه (المسجَّل حديثًا) كائن Member360 صالح — لا حاجة لبيانات إضافية لإثبات صحة الاستعلام نحويًا
+        resp = client.get(f"/api/v1/reports/member-360/{admin_id}")
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["user_id"] == admin_id
+        assert body["inventory_items_total"] == 0
+        assert body["store_ids"] == []
+
+    def test_404_for_nonexistent_user(self, app_and_client):
+        app, client, conn = app_and_client
+        _register_and_login(client, conn, f"admin-m360b-{uuid.uuid4().hex[:6]}@example.com", role="admin")
+        resp = client.get(f"/api/v1/reports/member-360/{uuid.uuid4()}")
+        assert resp.status_code == 404
+
+    def test_sensitive_endpoint_forbidden_for_regular_admin(self, app_and_client):
+        app, client, conn = app_and_client
+        admin_id = _register_and_login(client, conn, f"admin-m360c-{uuid.uuid4().hex[:6]}@example.com", role="admin")
+        resp = client.get(f"/api/v1/reports/member-360/{admin_id}/sensitive")
+        assert resp.status_code == 403
+
+    def test_sensitive_endpoint_allowed_for_super_admin_and_query_executes(self, app_and_client):
+        app, client, conn = app_and_client
+        _register_and_login(client, conn, f"root-m360-{uuid.uuid4().hex[:6]}@example.com", role="super_admin")
+        target_id = _register_and_login(client, conn, f"target-m360-{uuid.uuid4().hex[:6]}@example.com", role="individual_buyer")
+        # target_id سجَّل دخوله للتو → iam.sessions يملك صفًا حقيقيًا فعليًا
+        client.post("/api/v1/auth/logout")
+        _register_and_login(client, conn, f"root2-m360-{uuid.uuid4().hex[:6]}@example.com", role="super_admin")
+        resp = client.get(f"/api/v1/reports/member-360/{target_id}/sensitive")
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["login_sessions_total"] >= 1
+
+
+class TestStore360OnLivePostgres:
+
+    def test_query_executes_with_empty_related_tables(self, app_and_client):
+        app, client, conn = app_and_client
+        seller_id = _register_and_login(client, conn, f"seller-s360-{uuid.uuid4().hex[:6]}@example.com", role="individual_seller")
+        store_id = client.post("/api/v1/store/stores", json={}).json()["id"]
+        client.post("/api/v1/auth/logout")
+        _register_and_login(client, conn, f"admin-s360-{uuid.uuid4().hex[:6]}@example.com", role="admin")
+        resp = client.get(f"/api/v1/reports/store-360/{store_id}")
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["store_id"] == store_id
+        assert body["owner_user_ref_id"] == seller_id
+        assert body["offers_total"] == 0
+        assert body["accepted_offer_rate"] == 0.0
+
+    def test_404_for_nonexistent_store(self, app_and_client):
+        app, client, conn = app_and_client
+        _register_and_login(client, conn, f"admin-s360b-{uuid.uuid4().hex[:6]}@example.com", role="admin")
+        resp = client.get(f"/api/v1/reports/store-360/{uuid.uuid4()}")
+        assert resp.status_code == 404
+
+
+class TestDataQualityDashboardOnLivePostgres:
+
+    def test_query_executes_with_empty_related_tables(self, app_and_client):
+        app, client, conn = app_and_client
+        _register_and_login(client, conn, f"admin-dq-{uuid.uuid4().hex[:6]}@example.com", role="admin")
+        resp = client.get("/api/v1/reports/data-quality")
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["inventory_items_without_price"] == 0
+        assert body["catalog_parts_total"] >= 0
+
+    def test_forbidden_for_non_admin(self, app_and_client):
+        app, client, conn = app_and_client
+        _register_and_login(client, conn, f"buyer-dq-{uuid.uuid4().hex[:6]}@example.com", role="individual_buyer")
+        resp = client.get("/api/v1/reports/data-quality")
+        assert resp.status_code == 403
