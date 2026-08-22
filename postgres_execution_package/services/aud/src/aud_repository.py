@@ -131,12 +131,33 @@ class PostgresAudRepository(AudRepository):
         return items, total
 
 
+class _NoOpAudTransaction:
+    """تصحيح توازٍ (Parity) — message_api.py وauth_api.py يستخدمان الآن
+    `with X_repo.connection:` لضمان معاملة صريحة حول إدراج أحداث التدقيق
+    الإلزامية (نفس آلية _NoOpTransaction في auth_repository.py، مُكرَّرة هنا
+    عمدًا بدل استيرادها لتفادي اقتران جديد غير ضروري بين وحدتين مستقلتين).
+    محاكاة وهمية بلا معاملة حقيقية — تنشر أي استثناء كما هو (__exit__ يُعيد
+    False دائمًا)، فيعمل نفس كود الإنتاج بلا فرع خاص للاختبارات الوهمية.
+    الذرّية الفعلية (Rollback حقيقي) تُختبَر فقط عبر اختبارات PostgreSQL
+    التكاملية، لا هنا — نفس الإقرار الصادق الموثَّق في auth_repository.py."""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        return False
+
+
 class InMemoryAudRepository(AudRepository):
     """للاختبارات فقط. Append-Only بنفس مبدأ النسخة الحية — لا أي طريقة تعديل/حذف."""
 
     def __init__(self):
         self._events: list[AuditEvent] = []
         self._next_id = 1
+
+    @property
+    def connection(self):
+        return _NoOpAudTransaction()
 
     def insert_event(self, event: AuditEvent) -> AuditEvent:
         event.id = f"aud-{self._next_id}"
