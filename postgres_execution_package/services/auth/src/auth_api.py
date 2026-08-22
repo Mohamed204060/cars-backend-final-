@@ -441,14 +441,23 @@ def login(
         # معرِّفًا غير موجود أو كلمة مرور خاطئة؛ رسالة الفشل الموحَّدة تمنع
         # تعداد الحسابات، والتسجيل هنا يحافظ على نفس المبدأ — لا نكشف عبر
         # aud.events ما لا يُكشَف عبر HTTP). المعرِّف المحاوَل نفسه لا
-        # يُخزَّن خامًا أبدًا — فقط HMAC. تسجيل هذا الحدث إلزامي أيضًا؛ فشل
-        # تسجيله لا يُبتلَع، بل يستبدل استجابة 401 العادية باستجابة خطأ
-        # صريحة (Fail-Closed — لا نجاح صامت لتسجيل الدليل الأمني الإلزامي).
+        # يُخزَّن خامًا أبدًا — فقط HMAC.
+        #
+        # تصحيح ثبات (Durability) نهائي: PostgresAudRepository.insert_event
+        # لا تُثبِّت (Commit) بمفردها إطلاقًا (مؤكَّد من قراءة الكود مباشرة:
+        # `with self._connection.cursor()`، لا `with self._connection:`).
+        # بلا معاملة صريحة هنا، رؤية الصف على نفس الاتصال (كما في اختبار
+        # سابق) لا تُثبِت الثبات الفعلي — قد يبقى الصف معلَّقًا بلا Commit
+        # حتى نهاية غامضة لدورة الطلب خارج هذا المستودع. نفس آلية مسار
+        # النجاح تمامًا الآن: with auth_repo.connection: يُغلِّف الإدراج،
+        # فيُثبَّت فعليًا قبل إعادة 401، أو يُسقَط بالكامل (Rollback حقيقي)
+        # ويُستبدَل بـ503 صريح إن فشل — لا نجاح صامت لتسجيل غير ثابت.
         try:
-            _record_login_security_event(
-                request, aud_repo, correlation_id, "login_failed",
-                user_id=None, attempted_identifier=body.login_identifier,
-            )
+            with auth_repo.connection:
+                _record_login_security_event(
+                    request, aud_repo, correlation_id, "login_failed",
+                    user_id=None, attempted_identifier=body.login_identifier,
+                )
         except SecurityEventPersistenceError as exc:
             raise error(correlation_id, status.HTTP_503_SERVICE_UNAVAILABLE, "LOGIN_HISTORY_PERSISTENCE_FAILED", str(exc))
         raise error(correlation_id, status.HTTP_401_UNAUTHORIZED, "INVALID_CREDENTIALS", "بيانات الاعتماد غير صحيحة.")
