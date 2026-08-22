@@ -543,6 +543,18 @@ components:
         is_deleted_by_sender: { type: boolean }
         is_deleted_by_recipient: { type: boolean }
 
+    UserStatusUpdateRequest:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string, enum: [active, suspended, banned, archived] }
+
+    UserStatusUpdateResponse:
+      type: object
+      properties:
+        user_id: { type: string, format: uuid }
+        status: { type: string, enum: [active, suspended, banned, archived] }
+
     AttachmentCreateRequest:
       type: object
       required: [file_name, mime_type, size_bytes]
@@ -1490,6 +1502,23 @@ paths:
             application/json:
               schema: { type: array, items: { $ref: '#/components/schemas/MessageResponse' } }
 
+  /api/v1/admin/conversations/{conversationId}/messages:
+    get:
+      operationId: adminListConversationMessages
+      summary: "Admin Operational Completion — قراءة إدارية مميَّزة لكل رسائل محادثة (بلا اعتماد على أعلام الحذف)، super_admin حصرًا، تُسجِّل حدث Audit عند كل وصول"
+      x-traceability: { requirements: [], decisions: [] }
+      security: [{ sessionAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/CorrelationIdHeader' }
+        - { name: conversationId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: كل رسائل المحادثة، بما فيها المحذوفة من منظور أي طرف
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/MessageResponse' } }
+        '403': { description: يتطلب super_admin تحديدًا, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+
   /api/v1/conversations/{conversationId}/messages/{messageId}:
     delete:
       operationId: deleteMessageForViewer
@@ -2186,6 +2215,29 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/auth/users/{userId}/status:
+    post:
+      operationId: updateUserStatus
+      summary: "Admin Operational Completion — تحديث حالة حساب (active/suspended/banned/archived) فقط، لا صلاحية أدوار إطلاقًا"
+      x-traceability: { requirements: [], decisions: [] }
+      security: [{ sessionAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CorrelationIdHeader'
+        - name: userId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UserStatusUpdateRequest' }
+      responses:
+        '200': { description: تم تحديث الحالة, content: { application/json: { schema: { $ref: '#/components/schemas/UserStatusUpdateResponse' } } } }
+        '400': { description: قيمة status غير معروفة, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '403': { description: ليس مدير نظام, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '404': { description: المستخدم غير موجود, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
 
   /api/v1/inventory-items:
     post:
