@@ -19,6 +19,7 @@ auth_api.py — طبقة REST API لخدمة Auth (Controllers)
 وSessionRepository الفعليَّين.
 """
 
+import logging
 import os
 from datetime import datetime, timezone
 from typing import Literal, Optional
@@ -60,6 +61,14 @@ from identifier_hmac import compute_attempted_identifier_hmac
 from aud_repository import AuditEvent
 
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
+
+# تصحيح أمني (منع تسريب معلومات داخلية): يُستخدَم لتسجيل تفاصيل استثناءات
+# قاعدة البيانات/التدقيق الحقيقية من جانب الخادم فقط (Server-Side Logging) —
+# لا تصل هذه التفاصيل أبدًا لاستجابة HTTP العامة للعميل (راجع _record_
+# login_security_event وموضعَي استدعائها أدناه). هذا استخدام مباشر لوحدة
+# logging القياسية في بايثون — لا آلية تسجيل مخصَّصة أخرى موجودة فعليًا في
+# هذا المستودع لإعادة استخدامها.
+_logger = logging.getLogger(__name__)
 
 # نفس مجموعة pct_api.SYSTEM_ADMIN_ROLES حرفيًا — لكن مُكرَّرة هنا عمدًا لا
 # مستوردة، لأن pct_api.py يستورد أصلًا من auth_api.py (error/get_correlation_id/
@@ -134,8 +143,17 @@ def _record_login_security_event(
             metadata=event_dict["metadata"],
         ))
     except Exception as exc:
+        # تصحيح أمني: التفاصيل الخام لأي استثناء (خطأ PostgreSQL حقيقي قد
+        # يكشف أسماء جداول/أعمدة/شذرات SQL) تُسجَّل من جانب الخادم فقط عبر
+        # logging، ولا تدخل رسالة الاستثناء العامة أبدًا — تلك الرسالة هي ما
+        # قد يصل لاحقًا لاستجابة HTTP للعميل عبر str(exc) في مواضع الاستدعاء،
+        # فيجب أن تبقى عامة وثابتة دومًا مهما كان سبب الفشل الفعلي.
+        _logger.error(
+            "فشل تسجيل دليل الدخول التاريخي الإلزامي (outcome=%s, correlation_id=%s): %s",
+            outcome, correlation_id, exc, exc_info=True,
+        )
         raise SecurityEventPersistenceError(
-            f"تعذّر تسجيل دليل الدخول التاريخي الإلزامي ({outcome}): {exc}"
+            f"تعذّر تسجيل دليل الدخول التاريخي الإلزامي (outcome={outcome})."
         ) from exc
 
 
@@ -406,8 +424,7 @@ def register(
         raise error(
             correlation_id, status.HTTP_503_SERVICE_UNAVAILABLE, "REGISTRATION_SUCCEEDED_SESSION_FAILED",
             f"تم إنشاء الحساب فعلًا (user_id={result.user_id}) لكن تعذّر تسجيل جلسة الدخول الأولى "
-            f"بأمان — الحساب غير مفقود، يرجى تسجيل الدخول عبر /login مباشرة بدل إعادة التسجيل. "
-            f"التفاصيل: {exc}",
+            f"بأمان — الحساب غير مفقود، يرجى تسجيل الدخول عبر /login مباشرة بدل إعادة التسجيل.",
         )
 
     set_session_cookie(response, raw_token)
@@ -459,7 +476,10 @@ def login(
                     user_id=None, attempted_identifier=body.login_identifier,
                 )
         except SecurityEventPersistenceError as exc:
-            raise error(correlation_id, status.HTTP_503_SERVICE_UNAVAILABLE, "LOGIN_HISTORY_PERSISTENCE_FAILED", str(exc))
+            raise error(
+                correlation_id, status.HTTP_503_SERVICE_UNAVAILABLE, "LOGIN_HISTORY_PERSISTENCE_FAILED",
+                "تعذّر تسجيل دليل الدخول التاريخي الإلزامي. يرجى إعادة المحاولة لاحقًا.",
+            )
         raise error(correlation_id, status.HTTP_401_UNAUTHORIZED, "INVALID_CREDENTIALS", "بيانات الاعتماد غير صحيحة.")
 
     user_id = identity.user_id
@@ -479,7 +499,10 @@ def login(
             session_repo.create_session(user_id=user_id, token_hash=token_hash, expires_at=expires_at)
             _record_login_security_event(request, aud_repo, correlation_id, "login_success", user_id=user_id)
     except SecurityEventPersistenceError as exc:
-        raise error(correlation_id, status.HTTP_503_SERVICE_UNAVAILABLE, "LOGIN_HISTORY_PERSISTENCE_FAILED", str(exc))
+        raise error(
+                correlation_id, status.HTTP_503_SERVICE_UNAVAILABLE, "LOGIN_HISTORY_PERSISTENCE_FAILED",
+                "تعذّر تسجيل دليل الدخول التاريخي الإلزامي. يرجى إعادة المحاولة لاحقًا.",
+            )
 
     set_session_cookie(response, raw_token)
     response.headers["X-Correlation-Id"] = correlation_id
