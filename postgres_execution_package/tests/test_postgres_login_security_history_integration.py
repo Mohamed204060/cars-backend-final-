@@ -439,6 +439,16 @@ class TestFailedLoginHistory:
         assert resp.status_code == 503
         assert resp.json()["detail"]["error_code"] == "LOGIN_HISTORY_PERSISTENCE_FAILED"
 
+        # تصحيح أمني مُلزَم: لا تسريب معلومات داخلية في الاستجابة العامة —
+        # لا نص استثناء PostgreSQL الخام، لا اسم العمود غير الموجود المُستخدَم
+        # عمدًا لإثارة الفشل، لا أي شذرة SQL/تفاصيل قاعدة بيانات.
+        response_text = resp.text
+        assert "this_column_does_not_exist" not in response_text
+        assert "UndefinedColumn" not in response_text
+        assert "column" not in response_text.lower()
+        assert "INSERT INTO" not in response_text
+        assert "psycopg2" not in response_text.lower()
+
         app.state.aud_repository = real_aud_repo
 
         # الاتصال يجب أن يكون قابلًا للاستخدام الآن (Rollback حقيقي أخرج
@@ -665,6 +675,16 @@ class TestPrivateMessageAdministrativeAccess:
         assert resp.status_code == 503
         assert resp.json()["detail"]["error_code"] == "MESSAGE_ACCESS_AUDIT_PERSISTENCE_FAILED"
         assert "أي محتوى" not in resp.text
+
+        # تصحيح أمني مُلزَم: نفس فحوصات التسريب المطبَّقة على مسار الدخول
+        # الفاشل — لا نص استثناء PostgreSQL خام، لا اسم العمود المُستخدَم
+        # عمدًا لإثارة الفشل، لا أي شذرة SQL/تفاصيل قاعدة بيانات.
+        response_text = resp.text
+        assert "this_column_does_not_exist" not in response_text
+        assert "UndefinedColumn" not in response_text
+        assert "column" not in response_text.lower()
+        assert "INSERT INTO" not in response_text
+        assert "psycopg2" not in response_text.lower()
 
         app.state.aud_repository = real_aud_repo
 

@@ -192,3 +192,76 @@ class TestAttachments:
             "file_name": "huge.pdf", "mime_type": "application/pdf", "size_bytes": 20 * 1024 * 1024,
         })
         assert resp.status_code == 400
+
+class TestAdminPrivilegedMessageContentAccess:
+    """تصحيح توازٍ (Parity): تغطية InMemory إلزامية لمسار محتوى الرسائل
+    الإداري المميَّز (GET /admin/conversations/{id}/messages) — لم تكن
+    موجودة إطلاقًا سابقًا؛ الخطر الحقيقي المُكتشَف: with aud_repo.connection:
+    في message_api.py كانت ستفشل بـAttributeError على InMemoryAudRepository
+    (بلا خاصية connection) لولا إضافتها الآن (aud_repository.py). هذا
+    الاختبار يُثبِت أن المسار يعمل فعليًا على مسار الاختبار الوهمي المستخدَم
+    في بقية هذا الملف، لا PostgreSQL فقط."""
+
+    def test_super_admin_can_read_full_content_including_deleted(self, app_and_client):
+        app, client = app_and_client
+        _login_as(app, client, "sender-admin-test@example.com")
+        sent = client.post("/api/v1/messages", json={
+            "context_type": "purchase_request", "context_ref_id": "pr-admin-1", "body": "محتوى حسّاس",
+        }).json()
+        conversation_id = sent["conversation_id"]
+
+        client.delete(f"/api/v1/conversations/{conversation_id}/messages/{sent['id']}")
+
+        _login_as(app, client, "root-admin-test@example.com", role="super_admin")
+        resp = client.get(f"/api/v1/admin/conversations/{conversation_id}/messages")
+        assert resp.status_code == 200, resp.text
+        bodies = [m["body"] for m in resp.json()]
+        assert "محتوى حسّاس" in bodies
+
+    def test_regular_admin_forbidden(self, app_and_client):
+        app, client = app_and_client
+        _login_as(app, client, "regular-admin-test@example.com", role="admin")
+        resp = client.get("/api/v1/admin/conversations/some-conversation-id/messages")
+        assert resp.status_code == 403
+
+    def test_creates_audit_event_without_body_content(self, app_and_client):
+        app, client = app_and_client
+        _login_as(app, client, "sender-admin-test2@example.com")
+        sent = client.post("/api/v1/messages", json={
+            "context_type": "purchase_request", "context_ref_id": "pr-admin-2", "body": "نص لا يجب تسريبه",
+        }).json()
+        conversation_id = sent["conversation_id"]
+
+        admin_id = _login_as(app, client, "root-admin-test2@example.com", role="super_admin")
+        resp = client.get(f"/api/v1/admin/conversations/{conversation_id}/messages")
+        assert resp.status_code == 200
+
+        events = [e for e in app.state.aud_repository._events if e.event_name == "admin_message_content_accessed"]
+        assert len(events) == 1
+        assert events[0].actor_ref_id == admin_id
+        assert events[0].log_type == "administrative"
+        assert events[0].metadata.get("conversation_id") == conversation_id
+        assert "نص لا يجب تسريبه" not in str(events[0].metadata)
+
+    def test_audit_persistence_failure_returns_503_not_content(self, app_and_client):
+        """يثبت أن with aud_repo.connection: يعمل فعليًا مع InMemoryAudRepository
+        (لا AttributeError)، وأن فشل التدقيق (حتى لو Python-level هنا) يمنع
+        إعادة أي محتوى حسّاس — بلا تسريب تفاصيل الاستثناء الخام في الاستجابة."""
+        app, client = app_and_client
+        _login_as(app, client, "sender-admin-test3@example.com")
+        sent = client.post("/api/v1/messages", json={
+            "context_type": "purchase_request", "context_ref_id": "pr-admin-3", "body": "محتوى آخر",
+        }).json()
+        conversation_id = sent["conversation_id"]
+        _login_as(app, client, "root-admin-test3@example.com", role="super_admin")
+
+        def _broken_insert(event):
+            raise RuntimeError("simulated aud outage with internal detail: table aud.events column xyz")
+        app.state.aud_repository.insert_event = _broken_insert
+
+        resp = client.get(f"/api/v1/admin/conversations/{conversation_id}/messages")
+        assert resp.status_code == 503
+        assert resp.json()["detail"]["error_code"] == "MESSAGE_ACCESS_AUDIT_PERSISTENCE_FAILED"
+        assert "محتوى آخر" not in resp.text
+        # تسريب: لا تفاصيل الاستثناء الخام (نص محاكاة الخطأ الداخلي) في الاستجابة العامة
+        assert "table aud.events column xyz" not in resp.text
