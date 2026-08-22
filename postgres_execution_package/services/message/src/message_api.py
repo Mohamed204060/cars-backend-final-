@@ -21,10 +21,12 @@ from fastapi import APIRouter, Depends, Request, status
 from pydantic import BaseModel
 
 from auth_api import error, get_correlation_id, get_current_session
+from pct_api import get_auth_repository_for_role_check
 from order_api import get_order_repository
 from store_api import get_store_repository
 from inventory_item_api import get_inventory_repository
 from session_service import Session
+from aud_repository import AuditEvent
 from message_service import (
     EmptyMessageBodyError,
     InvalidContextTypeError,
@@ -35,6 +37,13 @@ from message_service import (
 )
 
 router = APIRouter(prefix="/api/v1", tags=["messaging"])
+
+# نفس مجموعة rpt_api.SENSITIVE_REPORT_ROLES حرفيًا — مُكرَّرة هنا عمدًا (لا
+# مستوردة) لتفادي أي اعتماد إضافي غير ضروري بين ملفات API منفصلة؛ نفس نمط
+# SYSTEM_ADMIN_ROLES المكرَّر في auth_api.py لسبب مشابه (تقليل الاقتران).
+# محتوى الرسائل بيانات حساسة بنفس تصنيف Member 360° Sensitive تمامًا
+# (Gap Sweep v2.2، بند 5/6) — super_admin حصرًا، لا SYSTEM_ADMIN_ROLES العامة.
+MESSAGE_CONTENT_ADMIN_ROLES = {"super_admin"}
 
 
 class MessageSendRequest(BaseModel):
@@ -76,6 +85,10 @@ class ConversationListResponse(BaseModel):
 
 def get_message_repository(request: Request):
     return request.app.state.message_repository
+
+
+def get_aud_repository(request: Request):
+    return request.app.state.aud_repository
 
 
 def _to_response(message) -> MessageResponse:
@@ -221,3 +234,54 @@ def list_my_conversations(
     return ConversationListResponse(
         items=summaries, pagination={"page": page, "page_size": page_size, "total_items": total},
     )
+
+
+# ---------------------------------------------------------------------------
+# GET /admin/conversations/{conversation_id}/messages — Admin Operational
+# Completion: Private-Message Administrative Access (Gap Sweep v2.2، بند 5/6)
+#
+# المتطلب المعتمَد (Reports Catalog §6): "الوصول إلى محتوى الرسائل يخضع
+# لصلاحيات Audit المعتمدة ولا يعرض تلقائيًا لكل مستخدم إداري" — مسار مستقل
+# تمامًا عن GET /conversations/{id}/messages العادي:
+# - بلا اعتماد على is_deleted_by_sender/is_deleted_by_recipient إطلاقًا (نص
+#   الرسالة نفسه لا يُحذَف فعليًا أبدًا — 011_com.sql، حذف نسبي فقط، فـ
+#   message_repo.get_messages_for_conversation نفسها تُعيد كل الصفوف دومًا؛
+#   الفلترة حسب الحذف تحدث فقط في list_messages العادي أعلاه، لا هنا).
+# - super_admin حصرًا (MESSAGE_CONTENT_ADMIN_ROLES) — لا نموذج صلاحية جديد،
+#   نفس تصنيف Member 360° Sensitive المعتمَد سابقًا.
+# - كل وصول يُسجَّل في aud.events (log_type='administrative') قبل إعادة أي
+#   محتوى — النطاق فقط (conversation_id + عدد الرسائل)، لا محتوى أي رسالة
+#   إطلاقًا في metadata (ممنوع صراحة في Gap Sweep v2.2، بند 6).
+# ---------------------------------------------------------------------------
+
+@router.get("/admin/conversations/{conversation_id}/messages", response_model=list[MessageResponse])
+def admin_list_conversation_messages(
+    conversation_id: str,
+    correlation_id: str = Depends(get_correlation_id),
+    current_session: Session = Depends(get_current_session),
+    message_repo=Depends(get_message_repository),
+    aud_repo=Depends(get_aud_repository),
+    auth_repo=Depends(get_auth_repository_for_role_check),
+):
+    role = auth_repo.get_user_role(current_session.user_id)
+    if role not in MESSAGE_CONTENT_ADMIN_ROLES:
+        raise error(correlation_id, status.HTTP_403_FORBIDDEN, "FORBIDDEN",
+                    "هذه العملية تتطلب صلاحية super_admin تحديدًا (بيانات حساسة).")
+
+    # بلا فلترة حسب is_deleted_by_sender/is_deleted_by_recipient إطلاقًا —
+    # هذا بالضبط الفرق الجوهري عن list_messages العادي أعلاه؛ المسار
+    # الإداري يرى كل شيء لأن المحتوى نفسه لم يُحذَف فعليًا قط من القاعدة.
+    messages = message_repo.get_messages_for_conversation(conversation_id)
+
+    # تسجيل الوصول *قبل* إعادة الاستجابة عمدًا — الوصول نفسه هو الحدث محل
+    # التدقيق، بصرف النظر عن نجاح إعادة الاستجابة لاحقًا. لا محتوى رسالة أي
+    # كان يدخل metadata — النطاق فقط (معرّف المحادثة + عدد الرسائل)، يكفي
+    # للتحقيق لاحقًا بلا كشف المحتوى نفسه داخل سجل التدقيق ذاته.
+    aud_repo.insert_event(AuditEvent(
+        id=None, log_type="administrative", event_name="admin_message_content_accessed",
+        correlation_id=correlation_id, actor_ref_id=current_session.user_id,
+        occurred_at_utc=None, before_value=None, after_value=None, reason=None,
+        metadata={"conversation_id": conversation_id, "message_count": len(messages)},
+    ))
+
+    return [_to_response(m) for m in messages]
