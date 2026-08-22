@@ -113,6 +113,15 @@ class AuthRepository(ABC):
         لكل استدعاءاته الحالية (لا تعديل عليها)."""
         raise NotImplementedError
 
+    @abstractmethod
+    def set_user_status(self, user_id: str, new_status: str) -> bool:
+        """Admin Operational Completion — Members/Accounts Administration
+        (Gap Sweep v2/v2.2، بند 4/7: Account status فقط — لا صلاحية أدوار).
+        يُحدِّث iam.users.status (القيد الموجود أصلًا: active/suspended/
+        banned/archived — لا قيمة جديدة تُخترَع هنا). يُعيد True إن وُجد
+        المستخدم وتم التحديث، False إن لم يوجد (404 مسؤولية طبقة الـAPI)."""
+        raise NotImplementedError
+
 
 class PostgresAuthRepository(AuthRepository):
     """
@@ -289,6 +298,18 @@ class PostgresAuthRepository(AuthRepository):
             row = cur.fetchone()
         return (row["primary_role"], row["status"]) if row else None
 
+    def set_user_status(self, user_id: str, new_status: str) -> bool:
+        # القيد chk_users_status الفعلي (001_iam.sql) يرفض أي قيمة خارج
+        # active/suspended/banned/archived على مستوى القاعدة أصلًا — لا فحص
+        # مكرَّر هنا، الاعتماد على القيد الحقيقي هو مصدر الحقيقة الوحيد.
+        with self._connection:
+            with self._connection.cursor() as cur:
+                cur.execute(
+                    "UPDATE iam.users SET status = %(status)s WHERE id = %(id)s RETURNING id",
+                    {"status": new_status, "id": user_id},
+                )
+                return cur.fetchone() is not None
+
     def create_user_and_identity_no_commit(
         self, primary_role: str, account_type: str,
         provider_code: str, external_identifier: str, raw_password: str,
@@ -394,10 +415,15 @@ class InMemoryAuthRepository(AuthRepository):
         self._user_status = {}  # user_id -> status ("active" افتراضيًا إن غاب)
         self._user_roles = {}  # user_id -> primary_role ("individual_buyer" افتراضيًا إن غاب، كما في create_user الفعلي
 
-    def set_user_status(self, user_id: str, status: str) -> None:
-        """أداة اختبار فقط (لا مكافئ حرفي على مستوى العقد)؛ تحاكي عمود
-        iam.users.status لاختبار سيناريو الحساب الموقوف/المحظور في الذاكرة."""
-        self._user_status[user_id] = status
+    def set_user_status(self, user_id: str, new_status: str) -> bool:
+        """كانت أداة اختبار داخلية فقط بلا مكافئ حرفي على العقد؛ أصبحت الآن
+        جزءًا من عقد AuthRepository الرسمي (Admin Operational Completion —
+        Members/Accounts Administration). لا قائمة مستخدمين مستقلة هنا
+        للتحقق من الوجود الفعلي (نفس قيد get_user_role_and_status أعلاه) —
+        نعتبر أي user_id مرَّر بجلسة صالحة موجودًا؛ True دائمًا هنا يطابق
+        نفس الافتراض المتَّبع في بقية هذا الـRepository الوهمي."""
+        self._user_status[user_id] = new_status
+        return True
 
     def set_user_role(self, user_id: str, role: str) -> None:
         """أداة اختبار فقط؛ تحاكي iam.users.primary_role لاختبار فحص الصلاحية

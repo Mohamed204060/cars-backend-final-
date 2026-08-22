@@ -285,3 +285,45 @@ def build_security_audit_event(action: str, user_id: str, provider_code: str) ->
         "actor_ref_id": user_id,
         "metadata": {"provider_code": provider_code},
     }
+
+
+def build_login_security_audit_event(
+    outcome: str,
+    ip_address: Optional[str],
+    user_id: Optional[str] = None,
+    attempted_identifier_hmac: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Admin Operational Completion — Login/Security History (Gap Sweep v2.2،
+    بنود 1-3). aud.events هو الـSSOT المعتمَد لتاريخ الدخول (Append-Only فعليًا
+    عبر carsmaint_app، لا iam.sessions — القرار المعتمَد في Gap Sweep v2.1).
+
+    outcome: "login_success" | "login_failed" حصرًا.
+    user_id: actor_ref_id — إلزامي لـlogin_success (النجاح يعني مستخدمًا
+    محدَّدًا حتمًا)، اختياري لـlogin_failed (None إن تعذّر تحليل هوية حقيقية،
+    وهو سيناريو مدعوم صراحةً في aud.events — العمود Nullable أصلًا).
+    attempted_identifier_hmac: لـlogin_failed فقط عند توفّر معرِّف محاوَل —
+    ناتج compute_attempted_identifier_hmac حصرًا، لا نص خام إطلاقًا (محسوم
+    في Gap Sweep v2.2، بند 3). يجب ألا يظهر أي معرِّف خام في metadata مهما
+    كانت الظروف.
+
+    لا كلمة مرور، لا Token، لا أي سر مصادقة يدخل metadata هنا إطلاقًا — هذه
+    الدالة لا تستقبل مثل هذه القيم أصلًا كمعامل، فلا مجال لتسريبها عرَضيًا.
+    """
+    if outcome not in ("login_success", "login_failed"):
+        raise ValueError(f"outcome غير معروف: {outcome}")
+    if outcome == "login_success" and not user_id:
+        raise ValueError("login_success يتطلب user_id إلزاميًا.")
+
+    metadata: Dict[str, Any] = {}
+    if ip_address is not None:
+        metadata["ip_address"] = ip_address
+    if outcome == "login_failed" and attempted_identifier_hmac is not None:
+        metadata["attempted_identifier_hmac"] = attempted_identifier_hmac
+
+    return {
+        "log_type": "security",
+        "event_name": outcome,
+        "actor_ref_id": user_id,
+        "metadata": metadata,
+    }
