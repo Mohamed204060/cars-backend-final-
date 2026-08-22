@@ -273,15 +273,27 @@ def admin_list_conversation_messages(
     # الإداري يرى كل شيء لأن المحتوى نفسه لم يُحذَف فعليًا قط من القاعدة.
     messages = message_repo.get_messages_for_conversation(conversation_id)
 
-    # تسجيل الوصول *قبل* إعادة الاستجابة عمدًا — الوصول نفسه هو الحدث محل
-    # التدقيق، بصرف النظر عن نجاح إعادة الاستجابة لاحقًا. لا محتوى رسالة أي
-    # كان يدخل metadata — النطاق فقط (معرّف المحادثة + عدد الرسائل)، يكفي
-    # للتحقيق لاحقًا بلا كشف المحتوى نفسه داخل سجل التدقيق ذاته.
-    aud_repo.insert_event(AuditEvent(
-        id=None, log_type="administrative", event_name="admin_message_content_accessed",
-        correlation_id=correlation_id, actor_ref_id=current_session.user_id,
-        occurred_at_utc=None, before_value=None, after_value=None, reason=None,
-        metadata={"conversation_id": conversation_id, "message_count": len(messages)},
-    ))
+    # تصحيح ثبات (Durability) نهائي — نفس النمط المُصحَّح في auth_api.py
+    # لمسار الدخول الفاشل: PostgresAudRepository.insert_event لا تُثبِّت
+    # (Commit) بمفردها إطلاقًا (`with self._connection.cursor()`، لا
+    # `with self._connection:`). رؤية الصف على نفس الاتصال وحدها لا تُثبِت
+    # الثبات الفعلي. aud_repo.connection هو نفس كائن psycopg2.connection
+    # المشترَك فعليًا مع message_repo (كلاهما يُبنَيان من نفس conn في تركيب
+    # التطبيق) — نُغلِّف الإدراج بمعاملة صريحة، فيُثبَّت فعليًا قبل إعادة
+    # المحتوى، أو نرفض الاستجابة بالكامل (503) إن فشل — لا إعادة محتوى
+    # حسّاس دون دليل تدقيق مُثبَّت فعليًا لهذا الوصول تحديدًا.
+    try:
+        with aud_repo.connection:
+            aud_repo.insert_event(AuditEvent(
+                id=None, log_type="administrative", event_name="admin_message_content_accessed",
+                correlation_id=correlation_id, actor_ref_id=current_session.user_id,
+                occurred_at_utc=None, before_value=None, after_value=None, reason=None,
+                metadata={"conversation_id": conversation_id, "message_count": len(messages)},
+            ))
+    except Exception as exc:
+        raise error(
+            correlation_id, status.HTTP_503_SERVICE_UNAVAILABLE, "MESSAGE_ACCESS_AUDIT_PERSISTENCE_FAILED",
+            f"تعذّر تسجيل دليل التدقيق الإلزامي لهذا الوصول الحسّاس؛ لن يُعاد أي محتوى بلا دليل مُثبَّت. التفاصيل: {exc}",
+        )
 
     return [_to_response(m) for m in messages]
