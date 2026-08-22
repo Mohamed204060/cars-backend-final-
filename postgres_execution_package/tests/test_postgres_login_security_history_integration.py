@@ -55,6 +55,12 @@ os.environ.setdefault("LOGIN_IDENTIFIER_HMAC_SECRET", "integration-test-only-hma
 # تضبط كلمة مرور مختلفة تمامًا عبر إدارة أسرارها الخاصة، لا هذه القيمة.
 _CARSMAINT_APP_TEST_PASSWORD = "integration-test-only-app-role-password"
 
+# TEST-NET-3 (RFC 5737) — نطاق محجوز رسميًا للتوثيق/الاختبار، غير قابل
+# للتوجيه على الإنترنت الحقيقي أبدًا. يُستخدَم كـpeer اصطناعي حتمي وصالح
+# لـTestClient بدل الافتراضي غير الرقمي — راجع الشرح الكامل عند بناء
+# TestClient أدناه (app_and_client fixture).
+TEST_CLIENT_PEER_IP = "203.0.113.42"
+
 
 @pytest.fixture
 def conn():
@@ -81,8 +87,49 @@ def app_and_client(conn):
     app.state.inventory_repository = PostgresInventoryItemRepository(conn)
     app.state.ref_repository = PostgresRefRepository(conn)
     app.state.vct_repository = PostgresVctRepository(conn)
-    client = TestClient(app, base_url="https://testserver")
+    # Root Cause (Evidence Gate — Login/Security PostgreSQL integration):
+    # Starlette TestClient يضبط peer العميل افتراضيًا إلى tuple اصطناعي غير
+    # رقمي (المعرَّف الوثائقي المعروف تاريخيًا لـStarlette: ("testclient", 50000))
+    # — request.client.host هذا لا يُحلَّل كـIPv4/IPv6 صالح أبدًا عبر
+    # resolve_authoritative_client_ip، فينتج None حتمًا؛ هذا سلوك الإنتاج
+    # الصحيح (رفض مضيف غير رقمي)، لا خطأ فيه، ولا يجوز إضعافه. الإصلاح هنا
+    # في طبقة الاختبار حصرًا: TestClient نفسها تدعم رسميًا معامل `client=`
+    # لضبط peer اصطناعي حقيقي وصالح (IPv4 محجوز للتوثيق/الاختبار فقط، وفق
+    # RFC 5737 — TEST-NET-3، غير قابل للتوجيه أبدًا على الإنترنت الحقيقي) —
+    # هذا يُشغِّل resolve_authoritative_client_ip الحقيقي كاملًا (لا تجاوز
+    # له، لا حقن IP مباشر في منطق الإنتاج) ضد peer صالح وحتمي فعليًا.
+    client = TestClient(app, base_url="https://testserver", client=(TEST_CLIENT_PEER_IP, 12345))
     return app, client, conn
+
+
+def _open_independent_connection():
+    """اتصال PostgreSQL مستقل تمامًا عن اتصال الـFixture الأساسي (conn) —
+    الدليل الحقيقي الوحيد على الثبات (Durability): رؤية صف على *نفس*
+    الاتصال الذي أدرجه لا تُثبِت شيئًا (قد يكون معلَّقًا بلا Commit بعد؛
+    PostgreSQL يُظهِر للمعاملة كتابتها غير المُثبَّتة لنفسها دائمًا). فقط
+    اتصال آخر تمامًا يمكنه إثبات أن الصف صار مرئيًا خارج معاملة الكاتب —
+    أي أنه أُثبِّت (Committed) فعليًا."""
+    return psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
+
+
+def _capture_new_events(cur, event_name: str, action_fn):
+    """Root Cause (Evidence Gate — Login/Security PostgreSQL integration، بند 2/3):
+    عزل حتمي بالمعرِّفات (Before/After ID Diff)، لا ORDER BY ... LIMIT N —
+    الأخيرة غير موثوقة على قاعدة اختبار مشتركة/متراكمة (قد تلتقط صفًا من
+    اختبار آخر، أو صفوفًا بطوابع زمنية متطابقة/بترتيب غير حتمي). يُنفِّذ
+    action_fn() ويُعيد (نتيجتها، فقط الصفوف الجديدة فعليًا لـevent_name هذا
+    التي ظهرت أثناء تنفيذها) — بمعزل تام عن أي بيانات موجودة مسبقًا أو
+    مُدرَجة من اختبارات أخرى. يعتمد على تنفيذ اختبارات هذا الملف تباعًا
+    (Sequential، سلوك pytest الافتراضي بلا تشغيل متوازٍ)."""
+    cur.execute("SELECT id FROM aud.events WHERE event_name = %(event_name)s", {"event_name": event_name})
+    before_ids = {row["id"] for row in cur.fetchall()}
+
+    result = action_fn()
+
+    cur.execute("SELECT * FROM aud.events WHERE event_name = %(event_name)s", {"event_name": event_name})
+    after_rows = cur.fetchall()
+    new_rows = [row for row in after_rows if row["id"] not in before_ids]
+    return result, new_rows
 
 
 def _register_and_login(client, conn, email: str, role: str = "individual_buyer") -> str:
@@ -173,24 +220,32 @@ class TestCarsmaintAppPrivilegeBoundary:
 class TestSuccessfulLoginHistory:
 
     def test_login_creates_one_historical_security_event(self, app_and_client):
+        """تصحيح ثبات: الإثبات عبر اتصال PostgreSQL مستقل تمامًا — نفس مبدأ
+        login_failed. المسار مغلَّف فعليًا بـwith auth_repo.connection: في
+        auth_api.py، فالإثبات هنا يتحقق من ذلك فعليًا لا افتراضًا."""
         app, client, conn = app_and_client
         email = f"loginhist-{uuid.uuid4().hex[:8]}@example.com"
         user_id = _register_and_login(client, conn, email)
         client.post("/api/v1/auth/logout")
 
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT * FROM aud.events WHERE event_name = 'login_success' AND actor_ref_id = %s",
-            (user_id,),
-        )
-        rows = cur.fetchall()
+        independent_conn = _open_independent_connection()
+        try:
+            icur = independent_conn.cursor()
+            icur.execute(
+                "SELECT * FROM aud.events WHERE event_name = 'login_success' AND actor_ref_id = %s",
+                (user_id,),
+            )
+            rows = icur.fetchall()
+        finally:
+            independent_conn.close()
+
         # تسجيل واحد وقت التسجيل (register يُنشئ جلسة فعلية أيضًا) —
-        # نتحقق من الحد الأدنى: صف واحد على الأقل حقيقي وصحيح.
+        # نتحقق من الحد الأدنى: صف واحد على الأقل حقيقي وصحيح ومُثبَّت.
         assert len(rows) >= 1
         row = rows[0]
         assert row["log_type"] == "security"
         assert row["occurred_at_utc"] is not None
-        assert row["metadata"].get("ip_address") is not None
+        assert row["metadata"].get("ip_address") == TEST_CLIENT_PEER_IP
 
     def test_explicit_login_after_logout_creates_additional_event(self, app_and_client):
         app, client, conn = app_and_client
@@ -248,51 +303,100 @@ class TestSuccessfulLoginHistory:
 
 class TestFailedLoginHistory:
 
-    def test_failed_login_creates_event_with_timestamp_and_ip(self, app_and_client):
+    def test_failed_login_creates_durable_event_with_timestamp_and_ip(self, app_and_client):
+        """تصحيح ثبات نهائي: الإثبات عبر اتصال PostgreSQL مستقل تمامًا عن
+        اتصال الكاتب — رؤية الصف على نفس اتصال الفحص السابق لا تُثبِت شيئًا
+        (PostgreSQL يُظهِر للمعاملة كتابتها غير المُثبَّتة لنفسها دائمًا).
+        هذا الاختبار يُثبِت أن login_failed يُثبَّت (Commit) فعليًا قبل
+        عودة 401 للعميل، لا مجرد مرئي على اتصال التطبيق الداخلي."""
         app, client, conn = app_and_client
+        cur = conn.cursor()
+        cur.execute("SELECT id FROM aud.events WHERE event_name = 'login_failed'")
+        before_ids = {row["id"] for row in cur.fetchall()}
+
         resp = client.post("/api/v1/auth/login", json={
             "login_identifier": f"nonexistent-{uuid.uuid4().hex[:8]}@example.com", "password": "wrong",
         })
         assert resp.status_code == 401
 
-        cur = conn.cursor()
-        cur.execute("SELECT * FROM aud.events WHERE event_name = 'login_failed' ORDER BY occurred_at_utc DESC LIMIT 1")
-        row = cur.fetchone()
-        assert row is not None
+        independent_conn = _open_independent_connection()
+        try:
+            icur = independent_conn.cursor()
+            icur.execute("SELECT * FROM aud.events WHERE event_name = 'login_failed'")
+            visible_from_independent_connection = icur.fetchall()
+        finally:
+            independent_conn.close()
+
+        new_rows = [row for row in visible_from_independent_connection if row["id"] not in before_ids]
+        assert len(new_rows) == 1, (
+            "الحدث يجب أن يكون مرئيًا ومُثبَّتًا فعليًا من اتصال مستقل تمامًا عن الكاتب — "
+            "لا مجرد موجود على اتصال التطبيق الداخلي."
+        )
+        row = new_rows[0]
         assert row["occurred_at_utc"] is not None
-        assert row["metadata"].get("ip_address") is not None
+        assert row["metadata"].get("ip_address") == TEST_CLIENT_PEER_IP
         assert row["actor_ref_id"] is None
 
     def test_attempted_identifier_hmac_present_deterministic_and_distinct(self, app_and_client):
         app, client, conn = app_and_client
+        cur = conn.cursor()
         identifier_a = f"hmac-a-{uuid.uuid4().hex[:8]}@example.com"
         identifier_b = f"hmac-b-{uuid.uuid4().hex[:8]}@example.com"
 
-        client.post("/api/v1/auth/login", json={"login_identifier": identifier_a, "password": "wrong1"})
-        client.post("/api/v1/auth/login", json={"login_identifier": identifier_a.upper() + "  ", "password": "wrong2"})
-        client.post("/api/v1/auth/login", json={"login_identifier": identifier_b, "password": "wrong3"})
+        def _durable_login_failed_row(identifier, password):
+            cur.execute("SELECT id FROM aud.events WHERE event_name = 'login_failed'")
+            before_ids = {row["id"] for row in cur.fetchall()}
+            resp = client.post("/api/v1/auth/login", json={"login_identifier": identifier, "password": password})
+            assert resp.status_code == 401
+            independent_conn = _open_independent_connection()
+            try:
+                icur = independent_conn.cursor()
+                icur.execute("SELECT * FROM aud.events WHERE event_name = 'login_failed'")
+                visible = icur.fetchall()
+            finally:
+                independent_conn.close()
+            new_rows = [row for row in visible if row["id"] not in before_ids]
+            assert len(new_rows) == 1
+            return new_rows[0]
 
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT metadata FROM aud.events WHERE event_name = 'login_failed' "
-            "ORDER BY occurred_at_utc DESC LIMIT 3",
-        )
-        rows = cur.fetchall()
-        hmacs = [r["metadata"].get("attempted_identifier_hmac") for r in rows]
-        assert all(h is not None for h in hmacs)
-        # الأحدث b، ثم a (طبَّع)، ثم a — نفس الترتيب الزمني العكسي
-        assert hmacs[1] == hmacs[2], "نفس المعرِّف بعد التطبيع يجب أن ينتج نفس HMAC"
-        assert hmacs[0] != hmacs[1], "معرِّف مختلف يجب أن ينتج HMAC مختلفًا"
+        # كل طلب مُلتقَط ومُثبَت الثبات (Durability) على حدة عبر اتصال مستقل
+        # — لا اعتماد على ترتيب/عدد الصفوف الكلي عبر الطلبات الثلاثة معًا.
+        row_a1 = _durable_login_failed_row(identifier_a, "wrong1")
+        hmac_a1 = row_a1["metadata"].get("attempted_identifier_hmac")
+
+        row_a2 = _durable_login_failed_row(identifier_a.upper() + "  ", "wrong2")
+        hmac_a2 = row_a2["metadata"].get("attempted_identifier_hmac")
+
+        row_b = _durable_login_failed_row(identifier_b, "wrong3")
+        hmac_b = row_b["metadata"].get("attempted_identifier_hmac")
+
+        assert hmac_a1 is not None and hmac_a2 is not None and hmac_b is not None
+        assert hmac_a1 == hmac_a2, "نفس المعرِّف بعد التطبيع (حالة أحرف/مسافات) يجب أن ينتج نفس HMAC"
+        assert hmac_a1 != hmac_b, "معرِّف مختلف يجب أن ينتج HMAC مختلفًا"
 
     def test_no_raw_identifier_or_credential_material_anywhere(self, app_and_client):
         app, client, conn = app_and_client
+        cur = conn.cursor()
         identifier = f"secret-check-{uuid.uuid4().hex[:8]}@example.com"
         secret_password = "SuperSecretPass1!"
-        client.post("/api/v1/auth/login", json={"login_identifier": identifier, "password": secret_password})
 
-        cur = conn.cursor()
-        cur.execute("SELECT metadata FROM aud.events WHERE event_name = 'login_failed' ORDER BY occurred_at_utc DESC LIMIT 1")
-        metadata_str = str(cur.fetchone()["metadata"])
+        cur.execute("SELECT id FROM aud.events WHERE event_name = 'login_failed'")
+        before_ids = {row["id"] for row in cur.fetchall()}
+
+        resp = client.post("/api/v1/auth/login", json={"login_identifier": identifier, "password": secret_password})
+        assert resp.status_code == 401
+
+        independent_conn = _open_independent_connection()
+        try:
+            icur = independent_conn.cursor()
+            icur.execute("SELECT * FROM aud.events WHERE event_name = 'login_failed'")
+            visible = icur.fetchall()
+        finally:
+            independent_conn.close()
+
+        new_rows = [row for row in visible if row["id"] not in before_ids]
+        assert len(new_rows) == 1
+        metadata_str = str(new_rows[0]["metadata"])
         assert identifier not in metadata_str
         assert secret_password not in metadata_str
         assert "password" not in metadata_str.lower()
@@ -306,6 +410,42 @@ class TestFailedLoginHistory:
         resp = client.get("/api/v1/audit/events", params={"event_name": "login_failed"})
         assert resp.status_code == 200
         assert resp.json()["pagination"]["total_items"] >= 1
+
+    def test_failed_login_returns_503_not_401_when_audit_persistence_fails_at_real_sql_layer(self, app_and_client):
+        """الاختبار السلبي المطلوب صراحةً: فشل حقيقي على مستوى PostgreSQL
+        نفسه (لا Python RuntimeError مُصطنَع) لإدراج login_failed — يجب أن
+        تعود 503 لا 401 بلا دليل تاريخي مُثبَّت. نفس أسلوب الإثبات المستخدَم
+        سابقًا لمسار النجاح (عمود غير موجود فعليًا → UndefinedColumn حقيقي)."""
+        app, client, conn = app_and_client
+        real_aud_repo = app.state.aud_repository
+        real_connection = real_aud_repo.connection
+
+        class _GenuinelyBrokenAudRepository:
+            connection = real_connection
+
+            def insert_event(self, event):
+                with real_connection.cursor() as cur:
+                    cur.execute(
+                        "INSERT INTO aud.events (log_type, event_name, correlation_id, this_column_does_not_exist) "
+                        "VALUES (%s, %s, gen_random_uuid(), %s)",
+                        ("security", "login_failed", "x"),
+                    )
+
+        app.state.aud_repository = _GenuinelyBrokenAudRepository()
+
+        resp = client.post("/api/v1/auth/login", json={
+            "login_identifier": f"audit-fail-{uuid.uuid4().hex[:8]}@example.com", "password": "wrong",
+        })
+        assert resp.status_code == 503
+        assert resp.json()["detail"]["error_code"] == "LOGIN_HISTORY_PERSISTENCE_FAILED"
+
+        app.state.aud_repository = real_aud_repo
+
+        # الاتصال يجب أن يكون قابلًا للاستخدام الآن (Rollback حقيقي أخرج
+        # المعاملة من حالة Aborted) — إثبات مباشر باستعلام تالٍ ناجح.
+        cur = conn.cursor()
+        cur.execute("SELECT 1")
+        assert cur.fetchone() is not None
 
 
 class TestSpoofedForwardedForProtection:
@@ -334,9 +474,10 @@ class TestSpoofedForwardedForProtection:
         )
         row = cur.fetchone()
         recorded_ip = row["metadata"].get("ip_address")
-        # لا تأكيد على قيمة "الصحيحة" الدقيقة (تعتمد على بيئة TestClient
-        # الداخلية) — التأكيد الأمني الحاسم فقط: القيمة المُنتحَلة لم
-        # تُقبَل كما هي (لا وسيط موثوق مضبوط، فيجب تجاهل الترويسة بالكامل).
+        # الآن مع peer حتمي معروف (TEST_CLIENT_PEER_IP)، تأكيد دقيق كامل لا
+        # مجرد "ليس القيمة المُنتحَلة": القيمة المسجَّلة هي peer الحقيقي
+        # بالضبط — إثبات إيجابي للسلوك الصحيح، لا سلبي فقط.
+        assert recorded_ip == TEST_CLIENT_PEER_IP
         assert recorded_ip != spoofed_ip
 
 
@@ -451,7 +592,9 @@ class TestPrivateMessageAdministrativeAccess:
         resp = client.get(f"/api/v1/admin/conversations/{conversation_id}/messages")
         assert resp.status_code == 403
 
-    def test_privileged_read_creates_its_own_audit_record_without_body_content(self, app_and_client):
+    def test_privileged_read_creates_its_own_durable_audit_record_without_body_content(self, app_and_client):
+        """تصحيح ثبات: نفس مبدأ login_failed — الإثبات عبر اتصال PostgreSQL
+        مستقل تمامًا عن الكاتب، لا مجرد رؤية على اتصال التطبيق الداخلي."""
         app, client, conn = app_and_client
         sender_id = _register_and_login(client, conn, f"sender2-{uuid.uuid4().hex[:8]}@example.com")
         secret_body = "نص سرّي آخر لا يجب أن يظهر في سجل التدقيق نفسه"
@@ -462,21 +605,68 @@ class TestPrivateMessageAdministrativeAccess:
         client.post("/api/v1/auth/logout")
 
         admin_id = _register_and_login(client, conn, f"root-msg2-{uuid.uuid4().hex[:8]}@example.com", role="super_admin")
-        client.get(f"/api/v1/admin/conversations/{conversation_id}/messages")
+        resp = client.get(f"/api/v1/admin/conversations/{conversation_id}/messages")
+        assert resp.status_code == 200
 
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT * FROM aud.events WHERE event_name = 'admin_message_content_accessed' "
-            "AND actor_ref_id = %s ORDER BY occurred_at_utc DESC LIMIT 1",
-            (admin_id,),
-        )
-        row = cur.fetchone()
-        assert row is not None
+        # الإثبات الحاسم: اتصال مستقل تمامًا — actor_ref_id مُقيَّد بمعرِّف
+        # هذا المدير الفريد المُولَّد لهذا الاختبار تحديدًا، فلا صف من أي
+        # اختبار آخر يمكن أن يطابقه إطلاقًا؛ لا ORDER BY ... LIMIT.
+        independent_conn = _open_independent_connection()
+        try:
+            icur = independent_conn.cursor()
+            icur.execute(
+                "SELECT * FROM aud.events WHERE event_name = 'admin_message_content_accessed' "
+                "AND actor_ref_id = %s",
+                (admin_id,),
+            )
+            rows = icur.fetchall()
+        finally:
+            independent_conn.close()
+
+        assert len(rows) == 1, "الحدث يجب أن يكون مرئيًا ومُثبَّتًا فعليًا من اتصال مستقل تمامًا عن الكاتب"
+        row = rows[0]
         assert row["log_type"] == "administrative"
         assert row["metadata"].get("conversation_id") == conversation_id
         assert secret_body not in str(row["metadata"])
         assert secret_body not in str(row["before_value"])
         assert secret_body not in str(row["after_value"])
+
+    def test_privileged_read_returns_503_when_audit_persistence_fails_at_real_sql_layer(self, app_and_client):
+        """الاختبار السلبي المطلوب: فشل حقيقي على مستوى PostgreSQL لإدراج
+        admin_message_content_accessed — يجب ألا يُعاد أي محتوى حسّاس بلا
+        دليل تدقيق مُثبَّت فعليًا لهذا الوصول تحديدًا."""
+        app, client, conn = app_and_client
+        _register_and_login(client, conn, f"sender3-{uuid.uuid4().hex[:8]}@example.com")
+        send_resp = client.post("/api/v1/messages", json={
+            "context_type": "purchase_request", "context_ref_id": str(uuid.uuid4()), "body": "أي محتوى",
+        })
+        conversation_id = send_resp.json()["conversation_id"]
+        client.post("/api/v1/auth/logout")
+
+        _register_and_login(client, conn, f"root-msg3-{uuid.uuid4().hex[:8]}@example.com", role="super_admin")
+
+        real_aud_repo = app.state.aud_repository
+        real_connection = real_aud_repo.connection
+
+        class _GenuinelyBrokenAudRepository:
+            connection = real_connection
+
+            def insert_event(self, event):
+                with real_connection.cursor() as cur:
+                    cur.execute(
+                        "INSERT INTO aud.events (log_type, event_name, correlation_id, this_column_does_not_exist) "
+                        "VALUES (%s, %s, gen_random_uuid(), %s)",
+                        ("administrative", "admin_message_content_accessed", "x"),
+                    )
+
+        app.state.aud_repository = _GenuinelyBrokenAudRepository()
+
+        resp = client.get(f"/api/v1/admin/conversations/{conversation_id}/messages")
+        assert resp.status_code == 503
+        assert resp.json()["detail"]["error_code"] == "MESSAGE_ACCESS_AUDIT_PERSISTENCE_FAILED"
+        assert "أي محتوى" not in resp.text
+
+        app.state.aud_repository = real_aud_repo
 
 
 class TestLoginRegisterTransactionalRollbackOnLivePostgres:
