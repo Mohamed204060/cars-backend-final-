@@ -123,6 +123,33 @@ components:
           type: string
           format: password
 
+    RegisterRequest:
+      type: object
+      required: [role_choice, account_type, email, password]
+      description: >
+        CR-018: role_choice/account_type مقيَّدان بنيويًا (enum) — لا قيمة
+        إدارية (admin/moderator/...) قابلة للوصول عبر هذا المسار إطلاقًا.
+      properties:
+        role_choice:
+          type: string
+          enum: [buyer, seller]
+        account_type:
+          type: string
+          enum: [individual, business]
+        email:
+          type: string
+        password:
+          type: string
+          format: password
+
+    RegisterResponse:
+      type: object
+      properties:
+        user_id: { type: string, format: uuid }
+        primary_role: { type: string }
+        account_type: { type: string }
+        store_id: { type: string, format: uuid, nullable: true }
+
     LoginResponse:
       type: object
       description: >
@@ -1518,6 +1545,16 @@ paths:
             application/json:
               schema: { type: array, items: { $ref: '#/components/schemas/MessageResponse' } }
         '403': { description: يتطلب super_admin تحديدًا, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '503':
+          description: >
+            تصحيح ثبات (Durability): تعذّر تسجيل دليل التدقيق الإلزامي لهذا
+            الوصول الحسّاس بأمان داخل معاملة صريحة (error_code=
+            MESSAGE_ACCESS_AUDIT_PERSISTENCE_FAILED) — لا يُعاد أي محتوى رسائل
+            بلا دليل وصول مُثبَّت فعليًا لهذا الطلب تحديدًا.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /api/v1/conversations/{conversationId}/messages/{messageId}:
     delete:
@@ -2181,6 +2218,55 @@ paths:
               schema:
                 $ref: '#/components/schemas/ProviderListResponse'
 
+  /api/v1/auth/register:
+    post:
+      operationId: authRegister
+      summary: تسجيل عضو جديد (بائع/مشترٍ) — بلا وصول لأي دور إداري، إنشاء متجر تلقائي للبائع، تسجيل دخول تلقائي بعد النجاح
+      x-traceability:
+        requirements: [REQ-IAM-001, REQ-IAM-002, REQ-IAM-006, REQ-STR-001, REQ-SEC-006]
+        decisions: []
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationIdHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+      responses:
+        '201':
+          description: تم إنشاء الحساب (والمتجر تلقائيًا للبائع) وتسجيل الدخول تلقائيًا
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RegisterResponse'
+        '400':
+          description: >
+            كلمة مرور ضعيفة (error_code=WEAK_PASSWORD) أو تركيبة role_choice/
+            account_type غير صالحة (error_code=INVALID_REGISTRATION_CHOICE).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: الهوية (البريد) مسجَّلة مسبقًا (error_code=IDENTITY_ALREADY_EXISTS)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: >
+            تصحيح ثبات (Durability): الحساب (والمتجر عند الاقتضاء) أُنشئ فعلًا
+            وبلا رجوع عنه، لكن تعذّر تسجيل جلسة الدخول الأولى بأمان مع دليلها
+            الأمني الإلزامي معًا داخل معاملة واحدة (error_code=
+            REGISTRATION_SUCCEEDED_SESSION_FAILED) — لا كوكي جلسة يصل العميل؛
+            يُستخدَم /auth/login مباشرة، لا إعادة /register (ستُعيد 409 حتمًا).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /api/v1/auth/login:
     post:
       operationId: authLogin
@@ -2211,6 +2297,17 @@ paths:
             حساب موقوف/محظور، أو مزوّد email_password معطَّل إداريًا؛ عمدًا
             بلا تمييز بينها لمنع تعداد الحسابات (تعديل CR-013 v2). تجاوز حد
             المحاولات المتكررة (REQ-SEC-007) لم يُنفَّذ بعد ضمن هذا الـIncrement.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: >
+            تصحيح ثبات (Durability): تعذّر تسجيل دليل الدخول التاريخي الإلزامي
+            (login_success أو login_failed حسب نتيجة التحقق) بأمان داخل معاملة
+            صريحة واحدة (error_code=LOGIN_HISTORY_PERSISTENCE_FAILED) — لا نجاح
+            صامت (200) ولا فشل مصادقة عادي (401) دون دليل تاريخي مُثبَّت فعليًا؛
+            الطلب يُرفَض بالكامل (Rollback حقيقي، لا جلسة صالحة تصل العميل).
           content:
             application/json:
               schema:
