@@ -545,6 +545,22 @@ jobs:
             --junitxml="../$EVIDENCE_DIR/sub-cnt-sup-integration-tests.xml" \
             2>&1 | tee "../$EVIDENCE_DIR/sub-cnt-sup-integration-tests.log"
 
+      - name: 'Run Login/Security History shared-module unit tests (client_ip + identifier_hmac)'
+        working-directory: postgres_execution_package
+        run: |
+          set -euo pipefail
+          python -m pytest tests/test_client_ip_and_identifier_hmac.py -vv \
+            --junitxml="../$EVIDENCE_DIR/login-security-shared-unit-tests.xml" \
+            2>&1 | tee "../$EVIDENCE_DIR/login-security-shared-unit-tests.log"
+
+      - name: 'Run Login/Security History integration tests on live PostgreSQL (login/failed-login history, carsmaint_app privilege boundary, transactional rollback, spoofed/malformed proxy, private-message admin access)'
+        working-directory: postgres_execution_package
+        run: |
+          set -euo pipefail
+          python -m pytest tests/test_postgres_login_security_history_integration.py -vv \
+            --junitxml="../$EVIDENCE_DIR/login-security-history-integration-tests.xml" \
+            2>&1 | tee "../$EVIDENCE_DIR/login-security-history-integration-tests.log"
+
 
       - name: Run full regression (361 tests)
         run: |
