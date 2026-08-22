@@ -136,22 +136,37 @@ class TestListAuditEventsFiltersAndPagination:
         record_audit_event_via_repository(repo, log_type="general", event_name="misc_event", actor_ref_id=u1)
 
     def test_lists_all_events_for_admin(self, app_and_client):
+        """Root Cause (GitHub Evidence Gate): _login_as أصبحت تُنشئ حدث
+        login_success إلزاميًا فعليًا (سلوك أمني معتمَد صحيح — لا يُضعَف
+        هنا إطلاقًا). هذا الاختبار كان يفترض عزل تام بين المصادقة والتدقيق،
+        وهو افتراض لم يعد صحيحًا (ولن يبقى صحيحًا مستقبلًا مع أي حدث تدقيق
+        جانبي آخر). التصحيح: عزل عبر actor_ref_id الخاص بالبيانات المزروعة
+        تحديدًا (u1/u2 عشوائيان، لا يتقاطعان أبدًا مع معرِّف المدير نفسه) —
+        لا افتراض على العدد الكلي المطلق."""
         app, client = app_and_client
-        self._seed(app, str(uuid.uuid4()), str(uuid.uuid4()))
+        u1, u2 = str(uuid.uuid4()), str(uuid.uuid4())
+        self._seed(app, u1, u2)
         _login_as(app, client, "admin@example.com", role="admin")
         resp = client.get("/api/v1/audit/events")
         assert resp.status_code == 200
-        assert resp.json()["pagination"]["total_items"] == 3
+        seeded_items = [e for e in resp.json()["items"] if e["actor_ref_id"] in (u1, u2)]
+        assert len(seeded_items) == 3
 
     def test_filter_by_log_type(self, app_and_client):
+        """نفس التصحيح: login_success حدث log_type='security' مشروع بذاته
+        (المدير سجَّل دخوله فعليًا)، فيتقاطع مع نفس فلتر log_type=security
+        هنا. العزل عبر actor_ref_id الخاص بالبيانات المزروعة (u1) يزيل هذا
+        التقاطع بلا أي افتراض هش على العدد الكلي."""
         app, client = app_and_client
-        self._seed(app, str(uuid.uuid4()), str(uuid.uuid4()))
+        u1, u2 = str(uuid.uuid4()), str(uuid.uuid4())
+        self._seed(app, u1, u2)
         _login_as(app, client, "admin@example.com", role="admin")
         resp = client.get("/api/v1/audit/events", params={"log_type": "security"})
         assert resp.status_code == 200
         body = resp.json()
-        assert body["pagination"]["total_items"] == 1
-        assert body["items"][0]["event_name"] == "identity_added"
+        seeded_matches = [e for e in body["items"] if e["actor_ref_id"] == u1]
+        assert len(seeded_matches) == 1
+        assert seeded_matches[0]["event_name"] == "identity_added"
 
     def test_filter_by_actor_ref_id(self, app_and_client):
         app, client = app_and_client
@@ -184,14 +199,23 @@ class TestListAuditEventsFiltersAndPagination:
         assert resp.json()["items"][0]["reason"] == "انتهاك سياسة"
 
     def test_pagination_page_size(self, app_and_client):
+        """نفس مبدأ العزل، لكن بمقاربة مختلفة (Delta لا Filter) لأن هذا
+        الاختبار يفحص آلية page_size/total_items نفسها، لا حدثًا محدَّدًا.
+        نُسجِّل دخول المدير أولًا فنحصل على القيمة الأساسية الحقيقية (Baseline
+        تتضمن حدث login_success نفسه بشرعية)، ثم نزرع 3 أحداث معروفة ونتحقق
+        من الزيادة الحتمية (+3) — بلا أي افتراض على رقم مطلق قد يتغيّر
+        مستقبلًا مع أي حدث تدقيق جانبي إضافي."""
         app, client = app_and_client
-        self._seed(app, str(uuid.uuid4()), str(uuid.uuid4()))
         _login_as(app, client, "admin@example.com", role="admin")
+        baseline_total = client.get("/api/v1/audit/events").json()["pagination"]["total_items"]
+
+        self._seed(app, str(uuid.uuid4()), str(uuid.uuid4()))
+
         resp = client.get("/api/v1/audit/events", params={"page": 1, "page_size": 2})
         assert resp.status_code == 200
         body = resp.json()
-        assert len(body["items"]) == 2
-        assert body["pagination"]["total_items"] == 3
+        assert len(body["items"]) == 2  # آلية page_size نفسها — بمعزل تام عن أي عدد كلي
+        assert body["pagination"]["total_items"] == baseline_total + 3
 
 
 class TestAuditEventsPaginationBounds:
