@@ -31,6 +31,7 @@ from scheduler_api import router as scheduler_router
 from scheduler_repository import InMemorySchedulerRepository
 from message_api import router as message_router
 from message_repository import InMemoryMessageRepository
+from aud_repository import InMemoryAudRepository
 
 
 @pytest.fixture
@@ -47,6 +48,7 @@ def app_and_client():
     providers = [IdentityProvider(code="email_password", display_name="كلمة المرور", category="password", is_enabled=True)]
     app.state.auth_repository = InMemoryAuthRepository(providers=providers, identities=[])
     app.state.session_repository = InMemorySessionRepository()
+    app.state.aud_repository = InMemoryAudRepository()
     app.state.store_repository = InMemoryStoreRepository()
     app.state.pct_repository = InMemoryPctRepository()
     app.state.order_repository = InMemoryOrderRepository()

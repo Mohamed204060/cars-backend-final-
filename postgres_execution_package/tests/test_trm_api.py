@@ -21,6 +21,7 @@ from store_api import router as store_router
 from store_repository import InMemoryStoreRepository
 from trm_api import router as trm_router
 from trm_repository import InMemoryTrmRepository
+from aud_repository import InMemoryAudRepository
 
 
 @pytest.fixture
@@ -35,6 +36,7 @@ def app_and_client():
     providers = [IdentityProvider(code="email_password", display_name="كلمة المرور", category="password", is_enabled=True)]
     app.state.auth_repository = InMemoryAuthRepository(providers=providers, identities=[])
     app.state.session_repository = InMemorySessionRepository()
+    app.state.aud_repository = InMemoryAudRepository()
     app.state.pct_repository = InMemoryPctRepository()
     app.state.order_repository = InMemoryOrderRepository()
     app.state.ref_repository = InMemoryRefRepository()  # CR-022: order_api.create_purchase_request يعتمد عليه الآن

@@ -18,6 +18,7 @@ from auth_repository import InMemoryAuthRepository
 from auth_service import IdentityProvider, UserIdentity
 from session_repository import InMemorySessionRepository
 from store_repository import InMemoryStoreRepository
+from aud_repository import InMemoryAudRepository
 
 
 @pytest.fixture
@@ -33,6 +34,10 @@ def app_and_client():
     app.state.session_repository = InMemorySessionRepository()
     # CR-018: register يحتاج store_repository (إنشاء متجر تلقائي للبائع، REQ-STR-001)
     app.state.store_repository = InMemoryStoreRepository()
+    # Login/Security History (Gap Sweep v2.2): login/register يكتبان login_success/
+    # login_failed إلى aud.events فعليًا الآن — بلا هذا، get_aud_repository
+    # (auth_api.py) يفشل بـAttributeError عند أول محاولة دخول/تسجيل.
+    app.state.aud_repository = InMemoryAudRepository()
 
     # base_url على https إلزامي هنا: الجلسة تُصدَر بخاصية Secure=True (CR-013،
     # لا نُعطِّلها في الاختبارات ولا في التطبيق)، وSecure Cookies لا تُرسَل من
@@ -378,3 +383,263 @@ class TestRegister:
         body_text = resp.text
         assert "password1" not in body_text
         assert "hash" not in body_text.lower()
+
+
+class TestLoginSecurityHistory:
+    """Admin Operational Completion — Login/Security History (Gap Sweep v2.2).
+    aud.events هو الـSSOT — نتحقق هنا من طبقة الـAPI عبر InMemoryAudRepository
+    (التحقق الحقيقي لصلاحيات القاعدة/Append-Only في اختبارات PostgreSQL)."""
+
+    def test_successful_login_creates_login_success_event(self, app_and_client):
+        app, client = app_and_client
+        _seed_password_identity(app, "loginhist@example.com", "Str0ngPass1!")
+        resp = _login(client, "loginhist@example.com", "Str0ngPass1!")
+        assert resp.status_code == 200
+
+        events = app.state.aud_repository._events
+        success_events = [e for e in events if e.event_name == "login_success"]
+        assert len(success_events) == 1
+        assert success_events[0].log_type == "security"
+        assert success_events[0].actor_ref_id is not None
+        assert success_events[0].occurred_at_utc is not None
+
+    def test_successful_registration_creates_login_success_event(self, app_and_client):
+        """التسجيل يُنشئ جلسة مصادَقة حقيقية فعليًا (نفس آلية /login) — لذا
+        يُسجَّل حدث login_success واحد أيضًا، تمثيلًا صادقًا لما حدث فعلًا."""
+        app, client = app_and_client
+        resp = client.post("/api/v1/auth/register", json={
+            "role_choice": "buyer", "account_type": "individual",
+            "email": "regevt@example.com", "password": "Str0ngPass1!",
+        })
+        assert resp.status_code == 201
+
+        events = app.state.aud_repository._events
+        success_events = [e for e in events if e.event_name == "login_success"]
+        assert len(success_events) == 1
+        assert success_events[0].actor_ref_id == resp.json()["user_id"]
+
+    def test_failed_login_creates_login_failed_event_with_null_actor(self, app_and_client, monkeypatch):
+        monkeypatch.setenv("LOGIN_IDENTIFIER_HMAC_SECRET", "test-secret-for-unit-tests")
+        app, client = app_and_client
+        resp = _login(client, "nonexistent@example.com", "wrongpass")
+        assert resp.status_code == 401
+
+        events = app.state.aud_repository._events
+        failed_events = [e for e in events if e.event_name == "login_failed"]
+        assert len(failed_events) == 1
+        assert failed_events[0].actor_ref_id is None
+        assert failed_events[0].log_type == "security"
+
+    def test_failed_login_wrong_password_still_null_actor(self, app_and_client, monkeypatch):
+        """رسالة الفشل الموحَّدة (منع تعداد الحسابات) تنعكس أيضًا في التدقيق:
+        لا فرق بين 'هوية غير موجودة' و'كلمة مرور خاطئة' في actor_ref_id."""
+        monkeypatch.setenv("LOGIN_IDENTIFIER_HMAC_SECRET", "test-secret-for-unit-tests")
+        app, client = app_and_client
+        _seed_password_identity(app, "wrongpass@example.com", "Str0ngPass1!")
+        resp = _login(client, "wrongpass@example.com", "totallywrong")
+        assert resp.status_code == 401
+
+        failed_events = [e for e in app.state.aud_repository._events if e.event_name == "login_failed"]
+        assert len(failed_events) == 1
+        assert failed_events[0].actor_ref_id is None
+
+    def test_no_password_or_credential_material_in_any_audit_event(self, app_and_client, monkeypatch):
+        monkeypatch.setenv("LOGIN_IDENTIFIER_HMAC_SECRET", "test-secret-for-unit-tests")
+        app, client = app_and_client
+        _seed_password_identity(app, "credcheck@example.com", "Str0ngPass1!")
+        _login(client, "credcheck@example.com", "Str0ngPass1!")
+        _login(client, "credcheck@example.com", "wrongpass")
+
+        for event in app.state.aud_repository._events:
+            metadata_str = str(event.metadata)
+            assert "Str0ngPass1!" not in metadata_str
+            assert "wrongpass" not in metadata_str
+            assert "password" not in metadata_str.lower()
+            assert "token" not in metadata_str.lower()
+
+    def test_no_raw_attempted_identifier_in_failed_login_event(self, app_and_client, monkeypatch):
+        monkeypatch.setenv("LOGIN_IDENTIFIER_HMAC_SECRET", "test-secret-for-unit-tests")
+        app, client = app_and_client
+        _login(client, "raw-identifier-check@example.com", "wrongpass")
+
+        failed_events = [e for e in app.state.aud_repository._events if e.event_name == "login_failed"]
+        assert len(failed_events) == 1
+        metadata_str = str(failed_events[0].metadata)
+        assert "raw-identifier-check@example.com" not in metadata_str
+
+    def test_attempted_identifier_hmac_present_and_deterministic(self, app_and_client, monkeypatch):
+        monkeypatch.setenv("LOGIN_IDENTIFIER_HMAC_SECRET", "test-secret-for-unit-tests")
+        app, client = app_and_client
+        _login(client, "hmactest@example.com", "wrong1")
+        _login(client, "HMACTest@Example.com  ", "wrong2")  # نفس الهوية بعد التطبيع
+
+        failed_events = [e for e in app.state.aud_repository._events if e.event_name == "login_failed"]
+        assert len(failed_events) == 2
+        hmac1 = failed_events[0].metadata.get("attempted_identifier_hmac")
+        hmac2 = failed_events[1].metadata.get("attempted_identifier_hmac")
+        assert hmac1 is not None
+        assert hmac1 == hmac2
+
+    def test_login_failure_returns_503_not_401_if_audit_write_fails(self, app_and_client, monkeypatch):
+        """تصحيح أمني (استبدال اختبار سابق كان يفترض تجاهل فشل التدقيق):
+        سجل الدخول التاريخي إلزامي، لا Best-Effort — عطل حقيقي في
+        aud_repository يجب أن يمنع اعتبار الطلب مكتملًا بأي استجابة عادية
+        (401 أو 200)، ويُستبدَل بخطأ صريح (503) يعكس فشل تسجيل الدليل
+        الأمني الإلزامي، لا نجاحًا/فشلًا صامتًا للمصادقة بمعزل عن ذلك."""
+        monkeypatch.setenv("LOGIN_IDENTIFIER_HMAC_SECRET", "test-secret-for-unit-tests")
+        app, client = app_and_client
+        _seed_password_identity(app, "auditcrash@example.com", "Str0ngPass1!")
+
+        def _broken_insert(event):
+            raise RuntimeError("simulated aud outage")
+        app.state.aud_repository.insert_event = _broken_insert
+
+        resp = _login(client, "auditcrash@example.com", "wrongpass")
+        assert resp.status_code == 503
+        assert resp.json()["detail"]["error_code"] == "LOGIN_HISTORY_PERSISTENCE_FAILED"
+
+    def test_successful_login_returns_503_and_no_session_cookie_if_audit_write_fails(self, app_and_client, monkeypatch):
+        """الحالة الأهم على مستوى HTTP: دخول بكلمة مرور صحيحة، لكن تسجيل
+        الدليل التاريخي يفشل — يجب ألا يصل العميل أي Cookie جلسة صالح
+        (Fail-Closed فعلي من منظور العميل).
+
+        تصحيح نهائي مهم بخصوص نطاق هذا الاختبار: التصميم النهائي يُغلِّف
+        إنشاء الجلسة + تسجيل الحدث داخل معاملة صريحة واحدة
+        (auth_repo.connection)، بحيث لا يُثبَّت صف الجلسة في PostgreSQL
+        الحقيقي أصلًا عند الفشل (Rollback حقيقي، لا Compensation). لكن
+        InMemorySessionRepository لا تملك دلالات معاملات حقيقية —
+        _NoOpTransaction (auth_repository.py) توثِّق هذا صراحةً: "لا
+        Rollback حقيقيًا عند فشل جزئي". لذا هذا الاختبار الوهمي يتحقق فقط
+        من عقد HTTP (503 + بلا Cookie) — إثبات عدم بقاء صف جلسة فعلي غير
+        مُبطَل حقيقةً يقع حصرًا على
+        test_postgres_login_security_history_integration.py (PostgreSQL حي)."""
+        monkeypatch.setenv("LOGIN_IDENTIFIER_HMAC_SECRET", "test-secret-for-unit-tests")
+        app, client = app_and_client
+        _seed_password_identity(app, "successcrash@example.com", "Str0ngPass1!")
+
+        def _broken_insert(event):
+            raise RuntimeError("simulated aud outage")
+        app.state.aud_repository.insert_event = _broken_insert
+
+        resp = _login(client, "successcrash@example.com", "Str0ngPass1!")
+        assert resp.status_code == 503
+        assert resp.json()["detail"]["error_code"] == "LOGIN_HISTORY_PERSISTENCE_FAILED"
+        assert "session_id" not in resp.cookies
+
+    def test_registration_succeeded_session_failed_reports_honestly(self, app_and_client, monkeypatch):
+        """تصحيح الحالة الفاصلة (Register) — عقد HTTP فقط هنا (راجع ملاحظة
+        النطاق في الاختبار أعلاه؛ الإثبات الحقيقي لعدم بقاء جلسة نشطة في
+        القاعدة الفعلية يقع في اختبار PostgreSQL المخصَّص). الحساب يُنشَأ
+        فعلًا وبلا رجوع عنه (مُثبَت من registration_service.py —
+        with auth_repo.connection: يُغلِق قبل عودة register_user())، ويجب
+        أن يُبلَّغ العميل صراحةً بذلك (لا حالة غامضة، رمز خطأ مختلف عن
+        فشل /login)."""
+        monkeypatch.setenv("LOGIN_IDENTIFIER_HMAC_SECRET", "test-secret-for-unit-tests")
+        app, client = app_and_client
+
+        def _broken_insert(event):
+            raise RuntimeError("simulated aud outage")
+        app.state.aud_repository.insert_event = _broken_insert
+
+        resp = client.post("/api/v1/auth/register", json={
+            "role_choice": "buyer", "account_type": "individual",
+            "email": "regcrash@example.com", "password": "Str0ngPass1!",
+        })
+        assert resp.status_code == 503
+        assert resp.json()["detail"]["error_code"] == "REGISTRATION_SUCCEEDED_SESSION_FAILED"
+        assert "session_id" not in resp.cookies
+
+        # الحساب موجود فعلًا رغم استجابة الخطأ — إثبات مباشر عبر المستودع
+        matching_identities = [
+            ident for ident in app.state.auth_repository._identities
+            if ident.external_identifier == "regcrash@example.com"
+        ]
+        assert len(matching_identities) == 1, "الحساب يجب أن يكون موجودًا فعلًا رغم 503"
+
+        # محاولة تسجيل ثانية بنفس البريد تصطدم بـ409 (الحساب موجود فعلًا) —
+        # يثبت أن الحالة ليست غامضة: العميل يجب أن يستخدم /login، لا يعيد /register
+        retry_resp = client.post("/api/v1/auth/register", json={
+            "role_choice": "buyer", "account_type": "individual",
+            "email": "regcrash@example.com", "password": "Str0ngPass1!",
+        })
+        assert retry_resp.status_code == 409
+
+    def test_missing_hmac_secret_fails_closed_not_silently_downgraded(self, app_and_client, monkeypatch):
+        """تصحيح أمني: سرّ HMAC غائب لمحاولة فاشلة تحمل معرِّفًا لم يعد
+        يُنتِج حدثًا بحقل ناقص (attempted_identifier_hmac=None) بصمت — يمنع
+        اكتمال الطلب بخطأ صريح، لأن غياب السرّ فشل تهيئة/أمان حقيقي."""
+        monkeypatch.delenv("LOGIN_IDENTIFIER_HMAC_SECRET", raising=False)
+        app, client = app_and_client
+
+        resp = _login(client, "missing-secret-check@example.com", "wrongpass")
+        assert resp.status_code == 503
+        assert resp.json()["detail"]["error_code"] == "LOGIN_HISTORY_PERSISTENCE_FAILED"
+
+        # لا حدث بحقل ناقص أُدرِج بصمت — الفشل منع الإدراج بالكامل لهذه المحاولة
+        failed_events = [e for e in app.state.aud_repository._events if e.event_name == "login_failed"]
+        assert len(failed_events) == 0
+
+
+class TestAccountStatusAdministration:
+    """Admin Operational Completion — Members/Accounts Administration
+    (Gap Sweep v2/v2.2، بند 4/7: Account Status فقط)."""
+
+    def _login_as_admin(self, app, client, email="admin-status@example.com"):
+        user_id = _seed_password_identity(app, email, "Str0ngPass1!")
+        app.state.auth_repository.set_user_role(user_id, "admin")
+        _login(client, email, "Str0ngPass1!")
+        return user_id
+
+    def test_requires_authentication(self, app_and_client):
+        _, client = app_and_client
+        resp = client.post("/api/v1/auth/users/some-id/status", json={"status": "suspended"})
+        assert resp.status_code == 401
+
+    def test_forbidden_for_non_admin(self, app_and_client):
+        app, client = app_and_client
+        user_id = _seed_password_identity(app, "regular-user@example.com", "Str0ngPass1!")
+        _login(client, "regular-user@example.com", "Str0ngPass1!")
+        resp = client.post(f"/api/v1/auth/users/{user_id}/status", json={"status": "suspended"})
+        assert resp.status_code == 403
+
+    def test_admin_can_suspend_account(self, app_and_client):
+        app, client = app_and_client
+        target_id = _seed_password_identity(app, "target-suspend@example.com", "Str0ngPass1!")
+        self._login_as_admin(app, client)
+
+        resp = client.post(f"/api/v1/auth/users/{target_id}/status", json={"status": "suspended"})
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "suspended"
+
+    def test_invalid_status_value_rejected(self, app_and_client):
+        app, client = app_and_client
+        target_id = _seed_password_identity(app, "target-invalid@example.com", "Str0ngPass1!")
+        self._login_as_admin(app, client)
+
+        resp = client.post(f"/api/v1/auth/users/{target_id}/status", json={"status": "not_a_real_status"})
+        assert resp.status_code == 400
+
+    def test_nonexistent_user_404(self, app_and_client):
+        app, client = app_and_client
+        self._login_as_admin(app, client)
+        resp = client.post("/api/v1/auth/users/does-not-exist/status", json={"status": "suspended"})
+        # InMemoryAuthRepository.set_user_status يُعيد True دائمًا (راجع
+        # auth_repository.py — لا قائمة مستخدمين مستقلة للتحقق من الوجود في
+        # الاختبار الوهمي)؛ 404 حقيقي يُثبَت في اختبار PostgreSQL فقط.
+        assert resp.status_code == 200
+
+    def test_endpoint_never_accepts_role_field(self, app_and_client):
+        """يثبت صراحة أن Endpoint الحالة لا يقبل primary_role إطلاقًا —
+        Privileged Role Assignment يبقى محظورًا (Gap Sweep v2.2، بند 6/7)."""
+        app, client = app_and_client
+        target_id = _seed_password_identity(app, "no-role-field@example.com", "Str0ngPass1!")
+        self._login_as_admin(app, client)
+
+        resp = client.post(
+            f"/api/v1/auth/users/{target_id}/status",
+            json={"status": "suspended", "primary_role": "super_admin"},
+        )
+        assert resp.status_code == 200
+        # لم يتغيّر الدور — UserStatusUpdateRequest (Pydantic) يتجاهل الحقل
+        # الزائد؛ لا مسار كود يقرأ primary_role من هذا الطلب إطلاقًا.
+        assert app.state.auth_repository.get_user_role(target_id) != "super_admin"

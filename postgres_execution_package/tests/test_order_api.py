@@ -19,6 +19,7 @@ from order_repository import InMemoryOrderRepository
 from ref_repository import InMemoryRefRepository
 from vct_repository import InMemoryVctRepository
 from ref_service import RefValue
+from aud_repository import InMemoryAudRepository
 
 
 @pytest.fixture
@@ -32,6 +33,7 @@ def app_and_client():
     providers = [IdentityProvider(code="email_password", display_name="كلمة المرور", category="password", is_enabled=True)]
     app.state.auth_repository = InMemoryAuthRepository(providers=providers, identities=[])
     app.state.session_repository = InMemorySessionRepository()
+    app.state.aud_repository = InMemoryAudRepository()
     app.state.store_repository = InMemoryStoreRepository()
     app.state.pct_repository = InMemoryPctRepository()
     app.state.order_repository = InMemoryOrderRepository()

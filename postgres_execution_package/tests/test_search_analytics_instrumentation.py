@@ -21,6 +21,7 @@ from search_api import router as search_router
 from search_repository import InMemorySearchRepository
 from search_service import InventoryItemView, normalize_arabic_search_text
 from ana_repository import InMemoryAnaRepository
+from aud_repository import InMemoryAudRepository
 
 
 def _item(**overrides) -> InventoryItemView:
@@ -136,6 +137,7 @@ class TestSearchAnalyticsActorAttributionWithRealSession:
         providers = [IdentityProvider(code="email_password", display_name="كلمة المرور", category="password", is_enabled=True)]
         app.state.auth_repository = InMemoryAuthRepository(providers=providers, identities=[])
         app.state.session_repository = InMemorySessionRepository()
+        app.state.aud_repository = InMemoryAudRepository()
         app.state.search_repository = InMemorySearchRepository(items=[_item()])
         app.state.ana_repository = InMemoryAnaRepository()
         client = TestClient(app, base_url="https://testserver")

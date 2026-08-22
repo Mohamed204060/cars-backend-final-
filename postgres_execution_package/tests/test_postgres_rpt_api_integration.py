@@ -35,6 +35,7 @@ from ana_repository import PostgresAnaRepository
 from rpt_api import router as rpt_router
 from rpt_repository import PostgresRptRepository
 from credential_service import hash_password
+from aud_repository import PostgresAudRepository
 
 
 DATABASE_URL = os.environ.get("TEST_DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/carparts_test")
@@ -60,6 +61,7 @@ def app_and_client(conn):
     app.include_router(rpt_router)
     app.state.auth_repository = PostgresAuthRepository(conn)
     app.state.session_repository = PostgresSessionRepository(conn)
+    app.state.aud_repository = PostgresAudRepository(conn)
     # Root-Cause (Run 32161095012): order_api.create_purchase_request يعتمد على
     # get_ref_repository (لفحص condition_ref_id عند تقديمه) — FastAPI يحقن كل
     # الاعتماديات المُعلَنة قبل تنفيذ الجسم، فتظهر AttributeError فورًا بلا

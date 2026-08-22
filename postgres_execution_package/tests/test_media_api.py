@@ -21,6 +21,7 @@ from session_repository import InMemorySessionRepository
 from media_api import router as media_router
 from media_repository import InMemoryMediaRepository
 from storage import InMemoryStorageAdapter
+from aud_repository import InMemoryAudRepository
 
 
 def _make_jpeg_bytes(width=800, height=600, color=(120, 60, 30)) -> bytes:
@@ -38,6 +39,7 @@ def app_and_client():
     providers = [IdentityProvider(code="email_password", display_name="كلمة المرور", category="password", is_enabled=True)]
     app.state.auth_repository = InMemoryAuthRepository(providers=providers, identities=[])
     app.state.session_repository = InMemorySessionRepository()
+    app.state.aud_repository = InMemoryAudRepository()
     app.state.media_repository = InMemoryMediaRepository()
     app.state.storage_adapter = InMemoryStorageAdapter()
     # افتراضي: يرفض كل ربط (Fail-closed) ما لم يُستبدَل صراحةً داخل الاختبار
@@ -351,6 +353,7 @@ def unit2_app_and_client():
     providers = [IdentityProvider(code="email_password", display_name="كلمة المرور", category="password", is_enabled=True)]
     app.state.auth_repository = InMemoryAuthRepository(providers=providers, identities=[])
     app.state.session_repository = InMemorySessionRepository()
+    app.state.aud_repository = InMemoryAudRepository()
     app.state.media_repository = InMemoryMediaRepository()
     app.state.storage_adapter = InMemoryStorageAdapter()
 

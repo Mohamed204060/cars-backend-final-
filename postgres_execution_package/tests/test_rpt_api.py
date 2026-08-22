@@ -15,6 +15,7 @@ from auth_service import IdentityProvider, UserIdentity
 from session_repository import InMemorySessionRepository
 from rpt_api import router as rpt_router
 from rpt_repository import InMemoryRptRepository
+from aud_repository import InMemoryAudRepository
 
 
 @pytest.fixture
@@ -26,6 +27,7 @@ def app_and_client():
     providers = [IdentityProvider(code="email_password", display_name="كلمة المرور", category="password", is_enabled=True)]
     app.state.auth_repository = InMemoryAuthRepository(providers=providers, identities=[])
     app.state.session_repository = InMemorySessionRepository()
+    app.state.aud_repository = InMemoryAudRepository()
     app.state.rpt_repository = InMemoryRptRepository()
 
     client = TestClient(app, base_url="https://testserver")

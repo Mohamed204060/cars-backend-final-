@@ -38,6 +38,7 @@ from ntf_repository import PostgresNtfRepository
 from ntf_service import NotificationCenterEntry
 from credential_service import hash_password
 from ref_repository import PostgresRefRepository
+from aud_repository import PostgresAudRepository
 
 
 DATABASE_URL = os.environ.get("TEST_DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/carparts_test")
@@ -64,6 +65,7 @@ def app_and_client(conn):
     app.include_router(ntf_router)
     app.state.auth_repository = PostgresAuthRepository(conn)
     app.state.session_repository = PostgresSessionRepository(conn)
+    app.state.aud_repository = PostgresAudRepository(conn)
     app.state.store_repository = PostgresStoreRepository(conn)
     app.state.pct_repository = PostgresPctRepository(conn)
     app.state.order_repository = PostgresOrderRepository(conn)

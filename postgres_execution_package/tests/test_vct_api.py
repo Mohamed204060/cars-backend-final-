@@ -13,6 +13,7 @@ from auth_service import IdentityProvider, UserIdentity
 from session_repository import InMemorySessionRepository
 from vct_api import router as vct_router
 from vct_repository import InMemoryVctRepository
+from aud_repository import InMemoryAudRepository
 
 
 @pytest.fixture
@@ -24,6 +25,7 @@ def app_and_client():
     providers = [IdentityProvider(code="email_password", display_name="كلمة المرور", category="password", is_enabled=True)]
     app.state.auth_repository = InMemoryAuthRepository(providers=providers, identities=[])
     app.state.session_repository = InMemorySessionRepository()
+    app.state.aud_repository = InMemoryAudRepository()
     app.state.vct_repository = InMemoryVctRepository()
 
     client = TestClient(app, base_url="https://testserver")

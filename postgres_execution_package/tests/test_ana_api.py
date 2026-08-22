@@ -17,6 +17,7 @@ from session_repository import InMemorySessionRepository
 from ana_api import router as ana_router
 from ana_repository import InMemoryAnaRepository
 from ana_service import record_analytics_event_via_repository
+from aud_repository import InMemoryAudRepository
 
 
 @pytest.fixture
@@ -28,6 +29,7 @@ def app_and_client():
     providers = [IdentityProvider(code="email_password", display_name="كلمة المرور", category="password", is_enabled=True)]
     app.state.auth_repository = InMemoryAuthRepository(providers=providers, identities=[])
     app.state.session_repository = InMemorySessionRepository()
+    app.state.aud_repository = InMemoryAudRepository()
     app.state.ana_repository = InMemoryAnaRepository()
 
     client = TestClient(app, base_url="https://testserver")

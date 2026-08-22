@@ -17,6 +17,7 @@ from auth_service import IdentityProvider, UserIdentity
 from session_repository import InMemorySessionRepository
 from ref_api import router as ref_router
 from ref_repository import InMemoryRefRepository
+from aud_repository import InMemoryAudRepository
 
 
 @pytest.fixture
@@ -28,6 +29,7 @@ def app_and_client():
     providers = [IdentityProvider(code="email_password", display_name="كلمة المرور", category="password", is_enabled=True)]
     app.state.auth_repository = InMemoryAuthRepository(providers=providers, identities=[])
     app.state.session_repository = InMemorySessionRepository()
+    app.state.aud_repository = InMemoryAudRepository()
     app.state.ref_repository = InMemoryRefRepository()
 
     client = TestClient(app, base_url="https://testserver")

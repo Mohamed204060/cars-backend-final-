@@ -24,6 +24,7 @@ from auth_repository import PostgresAuthRepository
 from session_repository import PostgresSessionRepository
 from pct_api import router as pct_router
 from pct_repository import PostgresPctRepository
+from aud_repository import PostgresAudRepository
 
 
 DATABASE_URL = os.environ.get("TEST_DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/carparts_test")
@@ -44,6 +45,7 @@ def app_and_client(conn):
     app.include_router(pct_router)
     app.state.auth_repository = PostgresAuthRepository(conn)
     app.state.session_repository = PostgresSessionRepository(conn)
+    app.state.aud_repository = PostgresAudRepository(conn)
     app.state.pct_repository = PostgresPctRepository(conn)
     client = TestClient(app, base_url="https://testserver")
     return app, client, conn

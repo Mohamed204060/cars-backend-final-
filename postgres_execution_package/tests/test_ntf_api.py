@@ -15,6 +15,7 @@ from session_repository import InMemorySessionRepository
 from ntf_api import router as ntf_router
 from ntf_repository import InMemoryNtfRepository
 from ntf_service import NotificationCenterEntry
+from aud_repository import InMemoryAudRepository
 
 
 @pytest.fixture
@@ -26,6 +27,7 @@ def app_and_client():
     providers = [IdentityProvider(code="email_password", display_name="كلمة المرور", category="password", is_enabled=True)]
     app.state.auth_repository = InMemoryAuthRepository(providers=providers, identities=[])
     app.state.session_repository = InMemorySessionRepository()
+    app.state.aud_repository = InMemoryAudRepository()
     app.state.ntf_repository = InMemoryNtfRepository()
 
     client = TestClient(app, base_url="https://testserver")

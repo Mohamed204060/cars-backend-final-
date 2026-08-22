@@ -23,6 +23,7 @@ from store_api import router as store_router
 from store_repository import InMemoryStoreRepository
 from inventory_item_api import router as inventory_router
 from inventory_item_repository import InMemoryInventoryItemRepository
+from aud_repository import InMemoryAudRepository
 
 
 @pytest.fixture
@@ -38,6 +39,7 @@ def app_and_client():
     providers = [IdentityProvider(code="email_password", display_name="كلمة المرور", category="password", is_enabled=True)]
     app.state.auth_repository = InMemoryAuthRepository(providers=providers, identities=[])
     app.state.session_repository = InMemorySessionRepository()
+    app.state.aud_repository = InMemoryAudRepository()
     app.state.message_repository = InMemoryMessageRepository()
     app.state.message_extended_repository = InMemoryMessageExtendedRepository()
     # CR-015: message_api.py send_message يستدعي _resolve_canonical_participant

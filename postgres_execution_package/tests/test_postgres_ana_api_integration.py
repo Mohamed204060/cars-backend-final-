@@ -22,6 +22,7 @@ from session_repository import PostgresSessionRepository
 from ana_api import router as ana_router
 from ana_repository import PostgresAnaRepository
 from credential_service import hash_password
+from aud_repository import PostgresAudRepository
 
 
 DATABASE_URL = os.environ.get("TEST_DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/carparts_test")
@@ -42,6 +43,7 @@ def app_and_client(conn):
     app.include_router(ana_router)
     app.state.auth_repository = PostgresAuthRepository(conn)
     app.state.session_repository = PostgresSessionRepository(conn)
+    app.state.aud_repository = PostgresAudRepository(conn)
     app.state.ana_repository = PostgresAnaRepository(conn)
     client = TestClient(app, base_url="https://testserver")
     return app, client, conn

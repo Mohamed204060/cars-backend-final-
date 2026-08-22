@@ -28,6 +28,7 @@ from pct_repository import InMemoryPctRepository
 from inventory_item_api import router as inventory_router
 from inventory_item_repository import InMemoryInventoryItemRepository
 from idempotency_repository import InMemoryIdempotencyRepository
+from aud_repository import InMemoryAudRepository
 
 _counter = itertools.count()
 
@@ -43,6 +44,7 @@ def app_and_client():
     providers = [IdentityProvider(code="email_password", display_name="كلمة المرور", category="password", is_enabled=True)]
     app.state.auth_repository = InMemoryAuthRepository(providers=providers, identities=[])
     app.state.session_repository = InMemorySessionRepository()
+    app.state.aud_repository = InMemoryAudRepository()
     app.state.store_repository = InMemoryStoreRepository()
     app.state.pct_repository = InMemoryPctRepository()
     app.state.inventory_repository = InMemoryInventoryItemRepository()

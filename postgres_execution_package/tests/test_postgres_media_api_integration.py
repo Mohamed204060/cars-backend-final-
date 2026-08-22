@@ -31,6 +31,7 @@ from media_api import router as media_router
 from media_repository import PostgresMediaRepository
 from storage import LocalStorageAdapter
 from credential_service import hash_password
+from aud_repository import PostgresAudRepository
 
 
 DATABASE_URL = os.environ.get("TEST_DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/carparts_test")
@@ -51,6 +52,7 @@ def app_and_client(conn, tmp_path):
     app.include_router(media_router)
     app.state.auth_repository = PostgresAuthRepository(conn)
     app.state.session_repository = PostgresSessionRepository(conn)
+    app.state.aud_repository = PostgresAudRepository(conn)
     app.state.media_repository = PostgresMediaRepository(conn)
     app.state.storage_adapter = LocalStorageAdapter(base_dir=str(tmp_path / "media-test-storage"))
     app.state.media_ownership_checker = lambda owner_type, owner_ref_id, uploader: True  # صلاحية دائمة True في هذه الحزمة (Unit 1 فقط — Unit 2 يستبدلها بفحص حقيقي)
@@ -286,6 +288,7 @@ def unit2_app_and_client(conn, tmp_path):
     app.include_router(media_router)
     app.state.auth_repository = PostgresAuthRepository(conn)
     app.state.session_repository = PostgresSessionRepository(conn)
+    app.state.aud_repository = PostgresAudRepository(conn)
     app.state.media_repository = PostgresMediaRepository(conn)
     app.state.storage_adapter = LocalStorageAdapter(base_dir=str(tmp_path / "media-test-storage-u2"))
 

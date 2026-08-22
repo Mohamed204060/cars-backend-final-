@@ -26,6 +26,7 @@ from vct_repository import PostgresVctRepository
 from cmp_api import router as cmp_router
 from cmp_repository import PostgresCmpRepository
 from credential_service import hash_password
+from aud_repository import PostgresAudRepository
 
 
 DATABASE_URL = os.environ.get("TEST_DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/carparts_test")
@@ -48,6 +49,7 @@ def app_and_client(conn):
     app.include_router(cmp_router)
     app.state.auth_repository = PostgresAuthRepository(conn)
     app.state.session_repository = PostgresSessionRepository(conn)
+    app.state.aud_repository = PostgresAudRepository(conn)
     app.state.pct_repository = PostgresPctRepository(conn)
     app.state.vct_repository = PostgresVctRepository(conn)
     app.state.cmp_repository = PostgresCmpRepository(conn)
