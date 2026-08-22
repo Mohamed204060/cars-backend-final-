@@ -9,6 +9,8 @@ test_auth_api.py — اختبارات وحدة لطبقة REST API لخدمة Au
 التسليم لتفاصيل التحقق البديل الذي أُجري فعليًا).
 """
 
+import os
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -20,9 +22,29 @@ from session_repository import InMemorySessionRepository
 from store_repository import InMemoryStoreRepository
 from aud_repository import InMemoryAudRepository
 
+# Root Cause (GitHub Evidence Gate failure — 3 pre-existing legacy tests):
+# _record_login_security_event أصبحت Fail-Closed (تصحيح أمني معتمَد، لا
+# رجوع عنه) — أي محاولة دخول فاشلة تحمل معرِّفًا تتطلب LOGIN_IDENTIFIER_HMAC_SECRET
+# فعليًا الآن، وإلا تُرفَض الاستجابة بـ503 بدل إتمام تصنيف الفشل الطبيعي (401).
+# ثلاثة اختبارات قديمة (تسبق هذه الدفعة بالكامل: test_login_with_wrong_password_
+# rejected_401، test_login_with_nonexistent_account_rejected_with_same_generic_
+# message، test_login_does_not_auto_create_account) لم تُحدَّث لتوفير هذا
+# السرّ — هذا فجوة إعداد اختبار قديم، لا خطأ في السلوك الأمني نفسه (الذي
+# يجب ألا يُضعَف). الإصلاح: قيمة افتراضية حتمية غير إنتاجية على مستوى
+# الـFixture نفسه (لا سرّ حقيقي، نص واضح "test-only" في القيمة ذاتها) —
+# كل اختبار في هذا الملف يحصل عليها تلقائيًا، فلا حاجة لتصحيح كل اختبار
+# فشل دخول قديم يدويًا واحدًا تلو الآخر (ولا خطر تكرار نفس الفجوة مستقبلًا
+# لاختبار جديد ينسى ضبطها). الاختبارات التي تتحقق تحديدًا من سلوك "السرّ
+# غائب" (TestFailedLoginHistory وTestLoginSecurityHistory) تُلغي هذه القيمة
+# صراحة بـmonkeypatch.delenv داخل جسم الاختبار نفسه — يعمل بشكل صحيح لأن
+# monkeypatch كائن واحد مشترَك بين الـFixture وجسم الاختبار لكل اختبار.
+_DEFAULT_TEST_HMAC_SECRET = "test-only-hmac-secret-not-for-production-do-not-reuse"
+
 
 @pytest.fixture
-def app_and_client():
+def app_and_client(monkeypatch):
+    monkeypatch.setenv("LOGIN_IDENTIFIER_HMAC_SECRET", _DEFAULT_TEST_HMAC_SECRET)
+
     app = FastAPI()
     app.include_router(auth_router)
 
